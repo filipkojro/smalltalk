@@ -1,4 +1,8 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use ringbuf::{
+    HeapRb,
+    traits::{Consumer, Producer, Split},
+};
 use std::sync::mpsc;
 
 fn main() {
@@ -24,24 +28,38 @@ fn main() {
     let latency_ms = 150.0;
     let latency_frames = (latency_ms / 1000.0) * config.sample_rate as f32;
     let latency_samples = latency_frames as usize * config.channels as usize;
-    let (tx, rx) = mpsc::sync_channel::<f32>(latency_samples * 2);
+    let rb = HeapRb::<f32>::new(latency_samples * 2);
+    let (mut prod, mut cons) = rb.split();
 
     for _ in 0..latency_samples {
-        tx.send(0.0).unwrap();
+        prod.try_push(0.0).unwrap();
     }
 
     let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
+        let mut output_behind = false;
         for &sample in data {
-            if tx.try_send(sample).is_err() {}
+            if prod.try_push(sample).is_err() {
+                output_behind = true;
+            }
+        }
+        if output_behind {
+            eprintln!("output behind");
         }
     };
 
     let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        let mut input_behind = false;
         for sample in data {
-            *sample = match rx.try_recv() {
-                Ok(s) => s,
-                Err(_) => 0.0,
+            *sample = match cons.try_pop() {
+                Some(s) => s,
+                None => {
+                    input_behind = true;
+                    0.0
+                }
             };
+        }
+        if input_behind {
+            eprintln!("input behind")
         }
     };
 
