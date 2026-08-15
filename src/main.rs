@@ -3,12 +3,52 @@ use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer, Split},
 };
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::net::UdpSocket;
+use tokio::net::{TcpStream, UdpSocket};
+
+#[derive(Serialize, Deserialize, PartialEq)]
+enum ResponseStatus {
+    Ok,
+    Err,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ConectionResponse {
+    status: ResponseStatus,
+    client_id: u32,
+}
 
 #[tokio::main]
 async fn main() {
     let server_address = "127.0.0.1:8080";
+
+    let tcp_stream = TcpStream::connect(server_address)
+        .await
+        .expect("failed to connect using tcp");
+
+    tcp_stream.readable().await.expect("idk");
+    let mut tcp_buf = [0; 4096];
+
+    let mut session_client_id: u32 = 0;
+
+    match tcp_stream.try_read(&mut tcp_buf) {
+        Ok(n) => {
+            // let connection_response = str::from_utf8(&tcp_buf[0..n]).expect("failed to create str");
+
+            let connection_response: ConectionResponse =
+                serde_json::from_slice(&tcp_buf[0..n]).unwrap();
+
+            session_client_id = connection_response.client_id;
+
+            println!(
+                "tcp response status: {}, clientId: {}",
+                connection_response.status == ResponseStatus::Ok,
+                connection_response.client_id
+            );
+        }
+        Err(e) => eprintln!("failed to receive tcp packet: {}", e),
+    }
 
     let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
 
@@ -34,22 +74,17 @@ async fn main() {
 
     println!("stream config: {:?}", config);
 
-    let latency_ms = 150.0;
-    let latency_frames = (latency_ms / 1000.0) * config.sample_rate as f32;
-    let latency_samples = latency_frames as usize * config.channels as usize;
+    let ring_buffer_ms = 150.0;
+    let ring_buffer_frames = (ring_buffer_ms / 1000.0) * config.sample_rate as f32;
+    let ring_buffer_samples = ring_buffer_frames as usize * config.channels as usize;
 
-    let ring_buffer_size = latency_samples * 2;
+    let ring_buffer_size = ring_buffer_samples;
 
     let microphone_ring_buffer = HeapRb::<f32>::new(ring_buffer_size);
     let (mut microphone_producer, mut microphone_consumer) = microphone_ring_buffer.split();
 
     let speaker_ring_buffer = HeapRb::<f32>::new(ring_buffer_size);
     let (mut speaker_producer, mut speaker_consumer) = speaker_ring_buffer.split();
-
-    for _ in 0..latency_samples {
-        microphone_producer.try_push(0.0).unwrap();
-        speaker_producer.try_push(0.0).unwrap();
-    }
 
     let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
         for &sample in data {
@@ -87,6 +122,9 @@ async fn main() {
                 microphone_consumer.pop_slice(&mut frame_buffer);
 
                 let mut payload = Vec::with_capacity(frames_needed * 4);
+
+                payload.extend(session_client_id.to_be_bytes());
+
                 for sample in &frame_buffer {
                     payload.extend_from_slice(&sample.to_le_bytes());
                 }
@@ -104,7 +142,14 @@ async fn main() {
         loop {
             match input_socket.recv_from(&mut receive_buffer).await {
                 Ok((len, _)) => {
-                    let audio_packet = &receive_buffer[..len];
+                    if len < 4 {
+                        continue;
+                    }
+
+                    let id_bytes: [u8; 4] = receive_buffer[0..4].try_into().unwrap();
+                    let client_id = u32::from_be_bytes(id_bytes);
+
+                    let audio_packet = &receive_buffer[4..len];
 
                     let mut decoded_samples = Vec::with_capacity(audio_packet.len() / 4);
 
