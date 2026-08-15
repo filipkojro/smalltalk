@@ -3,21 +3,9 @@ use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer, Split},
 };
-use serde::{Deserialize, Serialize};
+use shared::{ConectionResponse, ResponseStatus};
 use std::sync::Arc;
 use tokio::net::{TcpStream, UdpSocket};
-
-#[derive(Serialize, Deserialize, PartialEq)]
-enum ResponseStatus {
-    Ok,
-    Err,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ConectionResponse {
-    status: ResponseStatus,
-    client_id: u32,
-}
 
 #[tokio::main]
 async fn main() {
@@ -34,15 +22,13 @@ async fn main() {
 
     match tcp_stream.try_read(&mut tcp_buf) {
         Ok(n) => {
-            // let connection_response = str::from_utf8(&tcp_buf[0..n]).expect("failed to create str");
-
             let connection_response: ConectionResponse =
                 serde_json::from_slice(&tcp_buf[0..n]).unwrap();
 
             session_client_id = connection_response.client_id;
 
             println!(
-                "tcp response status: {}, clientId: {}",
+                "tcp response status Ok: {}, clientId: {}",
                 connection_response.status == ResponseStatus::Ok,
                 connection_response.client_id
             );

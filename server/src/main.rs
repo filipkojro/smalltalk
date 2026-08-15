@@ -1,7 +1,6 @@
-use serde::{Deserialize, Serialize};
+use shared::{ConectionResponse, ResponseStatus};
 use std::sync::Arc;
 use std::{collections::HashMap, net::SocketAddr};
-
 use tokio::io::AsyncWriteExt;
 use tokio::{
     net::{TcpListener, UdpSocket},
@@ -14,18 +13,6 @@ struct Client {
 }
 
 type State = Arc<RwLock<HashMap<u32, Client>>>;
-
-#[derive(Serialize, Deserialize)]
-enum ResponseStatus {
-    Ok,
-    Err,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ConectionResponse {
-    status: ResponseStatus,
-    client_id: u32,
-}
 
 #[tokio::main]
 async fn main() {
