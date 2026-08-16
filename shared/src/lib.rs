@@ -8,7 +8,7 @@ pub enum ResponseStatus {
 
 #[derive(Serialize, Deserialize)]
 pub struct AudioStreamInfo {
-    pub stream_id: u32,
+    pub stream_id: u8,
     pub channels: u8,
     pub sample_rate: u32,
 }
@@ -25,7 +25,7 @@ pub enum TcpRequestData {
     NewConnection,
     DropConnection,
     NewAudioStream { audio_stream_info: AudioStreamInfo },
-    DropAudioStream { audio_stream_id: u32 },
+    DropAudioStream { audio_stream_id: u8 },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -44,8 +44,14 @@ pub enum TcpResponseData {
     UserJoined {
         user_id: u32,
     },
+    UserConnected {
+        user_id: u32,
+    },
     UserDisconnected {
         user_id: u32,
+    },
+    NewAudioStream {
+        audio_stream_id: u8,
     },
     AudioStreamsUpdate {
         audio_stream_info: Vec<AudioStreamInfo>,

@@ -2,57 +2,110 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer, Split},
+    wrap::caching::Caching,
 };
 use shared::{ResponseStatus, TcpRequest, TcpResponse, TcpResponseData};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::{Mutex, broadcast};
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UdpSocket},
 };
+
+#[derive(Clone, Debug)]
+enum ClientEvent {
+    NewConnection,
+}
+
+type AudioStreamKey = (u32, u8);
+
+type AudioMixerStreams =
+    Arc<Mutex<HashMap<AudioStreamKey, Caching<Arc<HeapRb<f32>>, false, true>>>>;
 
 #[tokio::main]
 async fn main() {
     let server_address = "127.0.0.1:8080";
 
+    let (global_event_tx, _) = broadcast::channel::<ClientEvent>(16);
+
+    let active_streams: AudioMixerStreams = Arc::new(Mutex::new(HashMap::new()));
+    let active_streams_cpal = active_streams.clone();
+    let active_streams_socket = active_streams.clone();
+
     let mut tcp_stream = TcpStream::connect(server_address)
         .await
         .expect("failed to connect using tcp");
-
-    let _ = tcp_stream
-        .write_all(
-            serde_json::to_string(&TcpRequest {
-                client_id: 0,
-                data: shared::TcpRequestData::NewConnection,
-            })
-            .expect("failed to parse initial request")
-            .as_bytes(),
-        )
-        .await
-        .expect("failed to send initial message");
-
-    tcp_stream.readable().await.expect("idk");
-    let mut tcp_buf = [0; 4096];
+    // tcp_stream.readable().await.expect("idk");
 
     let mut session_client_id: u32 = 0;
+    let mut session_microphone_stream_id: u8 = 0;
 
-    match tcp_stream.try_read(&mut tcp_buf) {
-        Ok(n) => match serde_json::from_slice::<TcpResponse>(&tcp_buf[0..n]) {
-            Ok(response) => {
-                println!("connection Ok: {}", response.status == ResponseStatus::Ok);
-                match response.data {
-                    TcpResponseData::NewConnection { client_id } => {
-                        session_client_id = client_id;
-                        println!("new client id: {}", client_id)
+    let mut global_event_rx = global_event_tx.subscribe();
+
+    tokio::spawn(async move {
+        let mut tcp_buf = [0u8; 4096];
+        loop {
+            tokio::select! {
+                socket_result = tcp_stream.read(&mut tcp_buf) => {
+                    match socket_result {
+                        Ok(0) => {
+                            println!("server shut down");
+                            break;
+                        }
+                        Ok(n) => match serde_json::from_slice::<TcpResponse>(&tcp_buf[0..n]) {
+                            Ok(response) => {
+                                println!("connection Ok: {}", response.status == ResponseStatus::Ok);
+                                match response.data {
+                                    TcpResponseData::NewConnection { client_id } => {
+                                        session_client_id = client_id;
+                                        println!("fetched client id: {}", client_id);
+                                    }
+                                    TcpResponseData::UserConnected { user_id } => {
+                                        println!("new user connected: {}", user_id);
+                                    }
+                                    TcpResponseData::UserDisconnected { user_id } => {
+                                        println!("user disconnected: {}", user_id);
+                                    }
+                                    _ => {
+                                        println!("wrong response")
+                                    }
+                                }
+                            }
+                            Err(e) => eprintln!("failed to parse tcp packet: {}", e),
+                        },
+                        Err(e) => eprintln!("failed to receive tcp packet: {}", e),
                     }
-                    _ => {
-                        println!("wrong response")
+                }
+                event_result = global_event_rx.recv() => {
+                    match event_result {
+                        Ok(event) => {
+                            match event {
+                                ClientEvent::NewConnection => {
+                                    let _ = tcp_stream
+                                        .write_all(
+                                            serde_json::to_string(&TcpRequest {
+                                                client_id: 0,
+                                                data: shared::TcpRequestData::NewConnection,
+                                            })
+                                            .expect("failed to parse initial request")
+                                            .as_bytes(),
+                                        )
+                                        .await
+                                        .expect("failed to send initial message");
+                                }
+                                _ => {
+                                    println!("aaaa")
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("error: {}", e),
                     }
                 }
             }
-            Err(e) => eprintln!("failed to parse tcp packet: {}", e),
-        },
-        Err(e) => eprintln!("failed to receive tcp packet: {}", e),
-    }
+        }
+    });
+
+    let _ = global_event_tx.send(ClientEvent::NewConnection);
 
     let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
 
@@ -128,6 +181,7 @@ async fn main() {
                 let mut payload = Vec::with_capacity(frames_needed * 4);
 
                 payload.extend(session_client_id.to_be_bytes());
+                payload.extend(session_microphone_stream_id.to_be_bytes());
 
                 for sample in &frame_buffer {
                     payload.extend_from_slice(&sample.to_le_bytes());
@@ -150,10 +204,13 @@ async fn main() {
                         continue;
                     }
 
-                    let id_bytes: [u8; 4] = receive_buffer[0..4].try_into().unwrap();
-                    let stream_id = u32::from_be_bytes(id_bytes);
+                    let client_id_bytes: [u8; 4] = receive_buffer[0..4].try_into().unwrap();
+                    let client_id = u32::from_be_bytes(client_id_bytes);
 
-                    let audio_packet = &receive_buffer[4..len];
+                    let stream_id_bytes = receive_buffer[4];
+                    let stream_id = u8::from_be(stream_id_bytes);
+
+                    let audio_packet = &receive_buffer[5..len];
 
                     let mut decoded_samples = Vec::with_capacity(audio_packet.len() / 4);
 
