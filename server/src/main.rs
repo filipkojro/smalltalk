@@ -1,4 +1,4 @@
-use shared::{ConectionResponse, ResponseStatus};
+use shared::{AudioStreamInfo, ResponseStatus, TcpRequest, TcpRequestData, TcpResponse};
 use std::sync::Arc;
 use std::{collections::HashMap, net::SocketAddr};
 use tokio::io::AsyncWriteExt;
@@ -10,6 +10,7 @@ use tokio::{
 struct Client {
     tcp_addr: SocketAddr,
     udp_addr: Option<SocketAddr>,
+    audio_streams: Option<Vec<AudioStreamInfo>>,
 }
 
 type State = Arc<RwLock<HashMap<u32, Client>>>;
@@ -66,34 +67,42 @@ async fn main() {
         let (mut tcp_stream, tcp_address) =
             tcp_listener.accept().await.expect("failed to accept tcp");
 
-        let client_id = next_client_id;
-        next_client_id += 1;
+        tcp_stream.readable().await.expect("idk");
+        let mut tcp_buf = [0; 4096];
 
-        tcp_state.write().await.insert(
-            client_id,
-            Client {
-                tcp_addr: tcp_address,
-                udp_addr: None,
+        match tcp_stream.try_read(&mut tcp_buf) {
+            Ok(n) => match serde_json::from_slice::<TcpRequest>(&tcp_buf[0..n]) {
+                Ok(request) => match request.data {
+                    TcpRequestData::NewConnection => {
+                        let client_id = next_client_id;
+                        next_client_id += 1;
+                        tcp_state.write().await.insert(
+                            client_id,
+                            Client {
+                                tcp_addr: tcp_address,
+                                udp_addr: None,
+                                audio_streams: None,
+                            },
+                        );
+                        println!("new client: {}, from: {}", client_id, tcp_address);
+                        let _ = tcp_stream
+                            .write_all(
+                                serde_json::to_string(&TcpResponse {
+                                    status: ResponseStatus::Ok,
+                                    data: shared::TcpResponseData::NewConnection {
+                                        client_id: client_id,
+                                    },
+                                })
+                                .expect("failed to parse response json")
+                                .as_bytes(),
+                            )
+                            .await;
+                    }
+                    _ => eprintln!("i dont support other requests yet"),
+                },
+                Err(e) => eprintln!("failed to parse tcp packet: {}", e),
             },
-        );
-
-        let welcome_msg = ConectionResponse {
-            status: ResponseStatus::Ok,
-            client_id: client_id,
-        };
-
-        let _ = tcp_stream
-            .write_all(
-                serde_json::to_string(&welcome_msg)
-                    .expect("failed to parse json")
-                    .as_bytes(),
-            )
-            .await;
-
-        println!(
-            "new client: {}, from: {}",
-            client_id,
-            tcp_state.read().await.get(&client_id).unwrap().tcp_addr
-        );
+            Err(e) => eprintln!("failed to receive tcp packet: {}", e),
+        }
     }
 }

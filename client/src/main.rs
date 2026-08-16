@@ -3,17 +3,32 @@ use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer, Split},
 };
-use shared::{ConectionResponse, ResponseStatus};
+use shared::{ResponseStatus, TcpRequest, TcpResponse, TcpResponseData};
 use std::sync::Arc;
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpStream, UdpSocket},
+};
 
 #[tokio::main]
 async fn main() {
     let server_address = "127.0.0.1:8080";
 
-    let tcp_stream = TcpStream::connect(server_address)
+    let mut tcp_stream = TcpStream::connect(server_address)
         .await
         .expect("failed to connect using tcp");
+
+    let _ = tcp_stream
+        .write_all(
+            serde_json::to_string(&TcpRequest {
+                client_id: 0,
+                data: shared::TcpRequestData::NewConnection,
+            })
+            .expect("failed to parse initial request")
+            .as_bytes(),
+        )
+        .await
+        .expect("failed to send initial message");
 
     tcp_stream.readable().await.expect("idk");
     let mut tcp_buf = [0; 4096];
@@ -21,18 +36,21 @@ async fn main() {
     let mut session_client_id: u32 = 0;
 
     match tcp_stream.try_read(&mut tcp_buf) {
-        Ok(n) => {
-            let connection_response: ConectionResponse =
-                serde_json::from_slice(&tcp_buf[0..n]).unwrap();
-
-            session_client_id = connection_response.client_id;
-
-            println!(
-                "tcp response status Ok: {}, clientId: {}",
-                connection_response.status == ResponseStatus::Ok,
-                connection_response.client_id
-            );
-        }
+        Ok(n) => match serde_json::from_slice::<TcpResponse>(&tcp_buf[0..n]) {
+            Ok(response) => {
+                println!("connection Ok: {}", response.status == ResponseStatus::Ok);
+                match response.data {
+                    TcpResponseData::NewConnection { client_id } => {
+                        session_client_id = client_id;
+                        println!("new client id: {}", client_id)
+                    }
+                    _ => {
+                        println!("wrong response")
+                    }
+                }
+            }
+            Err(e) => eprintln!("failed to parse tcp packet: {}", e),
+        },
         Err(e) => eprintln!("failed to receive tcp packet: {}", e),
     }
 
@@ -133,7 +151,7 @@ async fn main() {
                     }
 
                     let id_bytes: [u8; 4] = receive_buffer[0..4].try_into().unwrap();
-                    let client_id = u32::from_be_bytes(id_bytes);
+                    let stream_id = u32::from_be_bytes(id_bytes);
 
                     let audio_packet = &receive_buffer[4..len];
 
