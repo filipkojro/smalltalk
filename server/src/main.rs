@@ -6,9 +6,8 @@ use tokio::{
     net::{TcpListener, UdpSocket},
     sync::{RwLock, broadcast},
 };
-
+// TODO: add auth to this
 struct Client {
-    tcp_addr: SocketAddr,
     udp_addr: Option<SocketAddr>,
     audio_streams: Option<Vec<AudioStreamInfo>>,
 }
@@ -70,8 +69,6 @@ async fn main() {
         }
     });
 
-    let mut next_client_id: u32 = 1;
-
     loop {
         let (mut tcp_stream, tcp_address) =
             tcp_listener.accept().await.expect("failed to accept tcp");
@@ -82,7 +79,7 @@ async fn main() {
         let mut global_event_rx = global_event_tx.subscribe();
 
         tokio::spawn(async move {
-            let mut current_client_id: u32 = 0;
+            let current_client_id: u32 = rand::random();
             let mut tcp_buf = [0; 4096];
 
             loop {
@@ -97,12 +94,9 @@ async fn main() {
                             Ok(n) => match serde_json::from_slice::<TcpRequest>(&tcp_buf[0..n]) {
                                 Ok(request) => match request.data {
                                     TcpRequestData::NewConnection => {
-                                        current_client_id = next_client_id;
-                                        next_client_id += 1;
                                         tcp_state.write().await.insert(
                                             current_client_id,
                                             Client {
-                                                tcp_addr: tcp_address,
                                                 udp_addr: None,
                                                 audio_streams: None,
                                             },
@@ -121,6 +115,9 @@ async fn main() {
                                                 .as_bytes(),
                                             )
                                             .await;
+                                    }
+                                    TcpRequestData::NewAudioStream { audio_stream_info } => {
+
                                     }
                                     _ => eprintln!("i dont support other requests yet"),
                                 },

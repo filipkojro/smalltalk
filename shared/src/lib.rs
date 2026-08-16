@@ -23,7 +23,6 @@ pub struct TcpRequest {
 #[serde(tag = "type")]
 pub enum TcpRequestData {
     NewConnection,
-    DropConnection,
     NewAudioStream { audio_stream_info: AudioStreamInfo },
     DropAudioStream { audio_stream_id: u8 },
 }
@@ -39,10 +38,6 @@ pub struct TcpResponse {
 pub enum TcpResponseData {
     NewConnection {
         client_id: u32,
-    },
-    Updated,
-    UserJoined {
-        user_id: u32,
     },
     UserConnected {
         user_id: u32,
