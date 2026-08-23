@@ -295,7 +295,7 @@ async fn main() {
         let mut receive_buffer = vec![0u8; 4096];
 
         let mut decoded_samples = [0.0f32; 1024];
-        let mut decoded_samples_converted = [0.0f32; 1024];
+        let mut decoded_samples_converted = [0.0f32; 2048];
 
         loop {
             match input_socket.recv_from(&mut receive_buffer).await {
@@ -363,7 +363,7 @@ async fn main() {
                             );
                         } else {
                             for (i, frame) in decoded_samples_converted
-                                [..decoded_len * stream_info.channels as usize]
+                                [..decoded_len * speaker_config_clone.channels as usize]
                                 .chunks_exact_mut(2)
                                 .enumerate()
                             {
@@ -373,7 +373,7 @@ async fn main() {
 
                             producer.push_slice(
                                 &decoded_samples_converted
-                                    [..decoded_len * stream_info.channels as usize],
+                                    [..decoded_len * speaker_config_clone.channels as usize],
                             );
                         }
                     }
