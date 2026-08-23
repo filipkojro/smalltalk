@@ -4,7 +4,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use ringbuf::{
-    HeapRb, consumer,
+    HeapRb,
     traits::{Consumer, Observer, Producer, Split},
     wrap::caching::Caching,
 };
@@ -377,29 +377,16 @@ async fn main() {
                             );
                         }
                     }
-
-                    // speaker_producer.push_slice(&decoded_samples);
                 }
                 Err(e) => eprintln!("failed to receive udp packet: {}", e),
             }
         }
     });
 
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
     let broadcast_transmitter = global_event_tx.clone();
     let broadcast_receiver = global_event_tx.subscribe();
 
     let client_info_audio_spawner = client_info.clone();
-
-    // let _ = audio_stream_spawner(
-    //     input_device,
-    //     broadcast_transmitter,
-    //     broadcast_receiver,
-    //     output_socket,
-    //     client_info_audio_spawner,
-    // )
-    // .await;
 
     tokio::spawn(audio_stream_spawner(
         input_device,
