@@ -1,3 +1,4 @@
+use clap::Parser;
 use cpal::{
     Device,
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -18,6 +19,13 @@ use tokio::{
     net::{TcpStream, UdpSocket},
 };
 
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    #[arg(short, long, required(true))]
+    server_ip: Option<String>,
+}
+
 #[derive(Clone)]
 enum ClientEvent {
     NewConnection,
@@ -36,15 +44,17 @@ type InputAudioStreamsInfo = Arc<RwLock<HashMap<AudioStreamKey, AudioStreamInfo>
 
 struct ClientInfo {
     client_id: u32,
-    server_address: &'static str,
+    server_address: String,
     connected: bool,
 }
 
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
+
     let client_info: Arc<RwLock<ClientInfo>> = Arc::new(RwLock::new(ClientInfo {
         client_id: 0,
-        server_address: "127.0.0.1:8080",
+        server_address: cli.server_ip.unwrap(),
         connected: false,
     }));
 
@@ -63,7 +73,7 @@ async fn main() {
 
     let server_address = {
         let info = client_info.read().unwrap();
-        info.server_address
+        info.server_address.clone()
     };
 
     let mut tcp_stream = TcpStream::connect(server_address)
@@ -435,7 +445,7 @@ async fn audio_stream_spawner(
 
             let (server_address, client_id) = {
                 let info = clinet_info.read().unwrap();
-                (info.server_address, info.client_id)
+                (info.server_address.clone(), info.client_id)
             };
 
             payload.extend(client_id.to_be_bytes());

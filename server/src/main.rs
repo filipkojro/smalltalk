@@ -1,3 +1,4 @@
+use clap::Parser;
 use shared::{AudioStreamInfo, ResponseStatus, TcpRequest, TcpRequestData, TcpResponse};
 use std::sync::Arc;
 use std::{collections::HashMap, net::SocketAddr};
@@ -6,6 +7,14 @@ use tokio::{
     net::{TcpListener, UdpSocket},
     sync::{RwLock, broadcast},
 };
+
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    #[arg(short, long, default_value("0.0.0.0:8080"))]
+    server_ip: Option<String>,
+}
+
 // TODO: add auth to this
 struct Client {
     udp_addr: Option<SocketAddr>,
@@ -36,7 +45,9 @@ fn scrape_all_client_streams_info(clients: &HashMap<u32, Client>) -> Vec<AudioSt
 
 #[tokio::main]
 async fn main() {
-    let listen_address = "0.0.0.0:8080";
+    let cli = Cli::parse();
+
+    let listen_address = cli.server_ip.unwrap();
 
     let (global_event_tx, _) = broadcast::channel::<ServerEvent>(16);
 
@@ -44,10 +55,10 @@ async fn main() {
 
     let udp_state = state.clone();
 
-    let tcp_listener = TcpListener::bind(listen_address)
+    let tcp_listener = TcpListener::bind(listen_address.clone())
         .await
         .expect("cant make tcp listener");
-    let udp_socket = UdpSocket::bind(listen_address)
+    let udp_socket = UdpSocket::bind(listen_address.clone())
         .await
         .expect("cant udp socket");
 
