@@ -3,6 +3,7 @@ use cpal::{
     Device,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
+use opus::{Decoder, Encoder};
 use ringbuf::{
     HeapRb, consumer,
     traits::{Consumer, Observer, Producer, Split},
@@ -40,6 +41,8 @@ type InputAudioStreamsProducers =
 type InputAudioStreamsConsumers =
     Arc<Mutex<HashMap<AudioStreamKey, Caching<Arc<HeapRb<f32>>, false, true>>>>;
 
+type InputAudioStreamsEncoders = Arc<RwLock<HashMap<AudioStreamKey, Mutex<Decoder>>>>;
+
 type InputAudioStreamsInfo = Arc<RwLock<HashMap<AudioStreamKey, AudioStreamInfo>>>;
 
 struct ClientInfo {
@@ -64,11 +67,16 @@ async fn main() {
         Arc::new(Mutex::new(HashMap::new()));
     let active_input_audio_streams_consumers: InputAudioStreamsConsumers =
         Arc::new(Mutex::new(HashMap::new()));
+
+    let active_input_audio_streams_encoders: InputAudioStreamsEncoders =
+        Arc::new(RwLock::new(HashMap::new()));
+
     let active_input_audio_streams_info: InputAudioStreamsInfo =
         Arc::new(RwLock::new(HashMap::new()));
 
     let active_input_audio_streams_producers_tcp = active_input_audio_streams_producers.clone();
     let active_input_audio_streams_consumers_tcp = active_input_audio_streams_consumers.clone();
+    let active_input_audio_streams_encoders_tcp = active_input_audio_streams_encoders.clone();
     let active_input_audio_streams_info_tcp = active_input_audio_streams_info.clone();
 
     let server_address = {
@@ -125,6 +133,9 @@ async fn main() {
                                         let mut consumer_map = active_input_audio_streams_consumers_tcp.lock().unwrap();
                                         consumer_map.clear();
 
+                                        let mut encoder_map = active_input_audio_streams_encoders_tcp.write().unwrap();
+                                        encoder_map.clear();
+
                                         let mut info_map = active_input_audio_streams_info_tcp.write().unwrap();
                                         info_map.clear();
 
@@ -145,6 +156,21 @@ async fn main() {
                                                 (audio_stream.client_id, audio_stream.stream_id),
                                                 consumer,
                                             );
+
+                                            let channels: opus::Channels = {
+                                                if audio_stream.channels == 1 {
+                                                    opus::Channels::Mono
+                                                } else {
+                                                    opus::Channels::Stereo
+                                                }
+                                            };
+
+                                            let decoder = Decoder::new(audio_stream.sample_rate, channels).expect("failed to creat decoder");
+                                            encoder_map.insert(
+                                                (audio_stream.client_id, audio_stream.stream_id),
+                                                Mutex::new(decoder),
+                                            );
+
                                             info_map.insert(
                                                 (audio_stream.client_id, audio_stream.stream_id),
                                                 audio_stream,
@@ -263,9 +289,13 @@ async fn main() {
     let active_input_audio_streams_producers_udp = active_input_audio_streams_producers.clone();
     let active_input_audio_streams_info_udp = active_input_audio_streams_info.clone();
     let speaker_config_clone = speaker_config.clone();
+    let active_input_audio_streams_encoders_clone = active_input_audio_streams_encoders.clone();
 
     tokio::spawn(async move {
         let mut receive_buffer = vec![0u8; 4096];
+
+        let mut decoded_samples = [0.0f32; 1024];
+        let mut decoded_samples_converted = [0.0f32; 1024];
 
         loop {
             match input_socket.recv_from(&mut receive_buffer).await {
@@ -282,55 +312,65 @@ async fn main() {
 
                     let audio_packet = &receive_buffer[5..len];
 
-                    let mut decoded_samples = Vec::with_capacity(audio_packet.len() / 4);
+                    let stream_info = {
+                        if let Some(&info) = active_input_audio_streams_info_udp
+                            .read()
+                            .unwrap()
+                            .get(&(client_id, stream_id))
+                        {
+                            info
+                        } else {
+                            continue;
+                        }
+                    };
 
-                    for chunk in audio_packet.chunks_exact(4) {
-                        let bytes: [u8; 4] = chunk.try_into().unwrap();
+                    let decoders_map = active_input_audio_streams_encoders_clone.read().unwrap();
 
-                        decoded_samples.push(f32::from_le_bytes(bytes));
-                    }
+                    let decoder_mutex = decoders_map
+                        .get(&(client_id, stream_id))
+                        .expect("failed to get encoder mutex");
+
+                    let mut decoder = decoder_mutex.lock().expect("failed to get encoder");
+
+                    let decoded_len = decoder
+                        .decode_float(audio_packet, &mut decoded_samples, false)
+                        .expect("failed to decode opus");
 
                     let mut active_streams_map =
                         active_input_audio_streams_producers_udp.lock().unwrap();
 
                     if let Some(producer) = active_streams_map.get_mut(&(client_id, stream_id)) {
-                        if let Some(&stream_info) = active_input_audio_streams_info_udp
-                            .read()
-                            .unwrap()
-                            .get(&(client_id, stream_id))
-                        {
-                            if stream_info.channels == speaker_config_clone.channels {
-                                producer.push_slice(&decoded_samples);
-                            } else {
-                                let n = stream_info.channels;
-                                let mut step = 0;
-                                decoded_samples.retain(|_| {
-                                    if step == 0 {
-                                        step = n - 1;
-                                        true
-                                    } else {
-                                        step -= 1;
-                                        false
-                                    }
-                                });
-                                if speaker_config_clone.channels == 1 {
-                                    producer.push_slice(&decoded_samples);
-                                } else {
-                                    let mut out = vec![
-                                        0f32;
-                                        decoded_samples.len()
-                                            * speaker_config_clone.channels as usize
-                                    ];
-                                    for (item, chunk) in
-                                        decoded_samples.iter().zip(out.chunks_exact_mut(
-                                            speaker_config_clone.channels as usize,
-                                        ))
-                                    {
-                                        chunk.fill(*item);
-                                    }
-                                    producer.push_slice(&out);
-                                }
+                        if stream_info.channels == speaker_config_clone.channels {
+                            producer.push_slice(
+                                &decoded_samples[..decoded_len * stream_info.channels as usize],
+                            );
+                        } else if stream_info.channels > speaker_config_clone.channels {
+                            for (i, frame) in decoded_samples
+                                [..decoded_len * stream_info.channels as usize]
+                                .chunks_exact(2)
+                                .enumerate()
+                            {
+                                decoded_samples_converted[i] = (frame[0] + frame[1]) / 2.0;
                             }
+
+                            producer.push_slice(
+                                &decoded_samples_converted
+                                    [..decoded_len * stream_info.channels as usize],
+                            );
+                        } else {
+                            for (i, frame) in decoded_samples_converted
+                                [..decoded_len * stream_info.channels as usize]
+                                .chunks_exact_mut(2)
+                                .enumerate()
+                            {
+                                frame[0] = decoded_samples[i];
+                                frame[1] = decoded_samples[i];
+                            }
+
+                            producer.push_slice(
+                                &decoded_samples_converted
+                                    [..decoded_len * stream_info.channels as usize],
+                            );
                         }
                     }
 
@@ -437,6 +477,19 @@ async fn audio_stream_spawner(
     let frames_needed = ((20.0 / 1000.0) * config.sample_rate as f32) as usize;
     let mut frame_buffer = vec![0.0; frames_needed];
 
+    let channels: opus::Channels = {
+        if config.channels == 1 {
+            opus::Channels::Mono
+        } else {
+            opus::Channels::Stereo
+        }
+    };
+
+    let mut opus_encoder = Encoder::new(config.sample_rate, channels, opus::Application::Voip)
+        .expect("falied to create opus encoder");
+
+    let mut encoded_frame_buffer = [0u8; 1024];
+
     loop {
         if consumer.occupied_len() >= frames_needed {
             consumer.pop_slice(&mut frame_buffer);
@@ -451,9 +504,11 @@ async fn audio_stream_spawner(
             payload.extend(client_id.to_be_bytes());
             payload.extend(current_stream_id.to_be_bytes());
 
-            for sample in &frame_buffer {
-                payload.extend_from_slice(&sample.to_le_bytes());
-            }
+            let encoded_len = opus_encoder
+                .encode_float(&frame_buffer.as_slice(), &mut encoded_frame_buffer)
+                .expect("failed to encode frame");
+
+            payload.extend_from_slice(&encoded_frame_buffer[..encoded_len]);
 
             let _ = udp_socket.send_to(&payload, server_address).await;
         } else {
