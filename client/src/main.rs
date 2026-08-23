@@ -54,12 +54,12 @@ async fn main() {
         Arc::new(Mutex::new(HashMap::new()));
     let active_input_audio_streams_consumers: InputAudioStreamsConsumers =
         Arc::new(Mutex::new(HashMap::new()));
-    let active_input_sudio_streams_info: InputAudioStreamsInfo =
+    let active_input_audio_streams_info: InputAudioStreamsInfo =
         Arc::new(RwLock::new(HashMap::new()));
 
     let active_input_audio_streams_producers_tcp = active_input_audio_streams_producers.clone();
     let active_input_audio_streams_consumers_tcp = active_input_audio_streams_consumers.clone();
-    let active_input_sudio_streams_info_tcp = active_input_sudio_streams_info.clone();
+    let active_input_audio_streams_info_tcp = active_input_audio_streams_info.clone();
 
     let server_address = {
         let info = client_info.read().unwrap();
@@ -115,7 +115,7 @@ async fn main() {
                                         let mut consumer_map = active_input_audio_streams_consumers_tcp.lock().unwrap();
                                         consumer_map.clear();
 
-                                        let mut info_map = active_input_sudio_streams_info_tcp.write().unwrap();
+                                        let mut info_map = active_input_audio_streams_info_tcp.write().unwrap();
                                         info_map.clear();
 
 
@@ -218,12 +218,12 @@ async fn main() {
     println!("input device: {}", input_device);
     println!("output device: {}", output_device);
 
-    let config: cpal::StreamConfig = input_device
-        .default_input_config()
+    let speaker_config: cpal::StreamConfig = output_device
+        .default_output_config()
         .expect("stream config init failed")
         .into();
 
-    println!("stream config: {:?}", config);
+    println!("speaker config: {:?}", speaker_config);
 
     let active_input_audio_streams_consumer_cpal = active_input_audio_streams_consumers.clone();
 
@@ -245,12 +245,14 @@ async fn main() {
 
     let err_fn = |err| eprintln!("stream error: {}", err);
     let output_stream = output_device
-        .build_output_stream(config, output_data_fn, err_fn, None)
+        .build_output_stream(speaker_config, output_data_fn, err_fn, None)
         .expect("building output stream failed");
 
     output_stream.play().expect("failed to play output stream");
 
     let active_input_audio_streams_producers_udp = active_input_audio_streams_producers.clone();
+    let active_input_audio_streams_info_udp = active_input_audio_streams_info.clone();
+    let speaker_config_clone = speaker_config.clone();
 
     tokio::spawn(async move {
         let mut receive_buffer = vec![0u8; 4096];
@@ -282,7 +284,44 @@ async fn main() {
                         active_input_audio_streams_producers_udp.lock().unwrap();
 
                     if let Some(producer) = active_streams_map.get_mut(&(client_id, stream_id)) {
-                        producer.push_slice(&decoded_samples);
+                        if let Some(&stream_info) = active_input_audio_streams_info_udp
+                            .read()
+                            .unwrap()
+                            .get(&(client_id, stream_id))
+                        {
+                            if stream_info.channels == speaker_config_clone.channels {
+                                producer.push_slice(&decoded_samples);
+                            } else {
+                                let n = stream_info.channels;
+                                let mut step = 0;
+                                decoded_samples.retain(|_| {
+                                    if step == 0 {
+                                        step = n - 1;
+                                        true
+                                    } else {
+                                        step -= 1;
+                                        false
+                                    }
+                                });
+                                if speaker_config_clone.channels == 1 {
+                                    producer.push_slice(&decoded_samples);
+                                } else {
+                                    let mut out = vec![
+                                        0f32;
+                                        decoded_samples.len()
+                                            * speaker_config_clone.channels as usize
+                                    ];
+                                    for (item, chunk) in
+                                        decoded_samples.iter().zip(out.chunks_exact_mut(
+                                            speaker_config_clone.channels as usize,
+                                        ))
+                                    {
+                                        chunk.fill(*item);
+                                    }
+                                    producer.push_slice(&out);
+                                }
+                            }
+                        }
                     }
 
                     // speaker_producer.push_slice(&decoded_samples);
