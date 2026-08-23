@@ -3,12 +3,12 @@ use cpal::{
     Device,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
-use opus::{Decoder, Encoder};
 use ringbuf::{
     HeapRb, consumer,
     traits::{Consumer, Observer, Producer, Split},
     wrap::caching::Caching,
 };
+use ropus::{Decoder, Encoder};
 use shared::{AudioStreamInfo, ResponseStatus, TcpRequest, TcpResponse, TcpResponseData};
 use std::{
     collections::HashMap,
@@ -157,11 +157,11 @@ async fn main() {
                                                 consumer,
                                             );
 
-                                            let channels: opus::Channels = {
+                                            let channels: ropus::Channels = {
                                                 if audio_stream.channels == 1 {
-                                                    opus::Channels::Mono
+                                                    ropus::Channels::Mono
                                                 } else {
-                                                    opus::Channels::Stereo
+                                                    ropus::Channels::Stereo
                                                 }
                                             };
 
@@ -333,7 +333,11 @@ async fn main() {
                     let mut decoder = decoder_mutex.lock().expect("failed to get encoder");
 
                     let decoded_len = decoder
-                        .decode_float(audio_packet, &mut decoded_samples, false)
+                        .decode_float(
+                            audio_packet,
+                            &mut decoded_samples,
+                            ropus::DecodeMode::Normal,
+                        )
                         .expect("failed to decode opus");
 
                     let mut active_streams_map =
@@ -477,16 +481,17 @@ async fn audio_stream_spawner(
     let frames_needed = ((20.0 / 1000.0) * config.sample_rate as f32) as usize;
     let mut frame_buffer = vec![0.0; frames_needed];
 
-    let channels: opus::Channels = {
+    let channels: ropus::Channels = {
         if config.channels == 1 {
-            opus::Channels::Mono
+            ropus::Channels::Mono
         } else {
-            opus::Channels::Stereo
+            ropus::Channels::Stereo
         }
     };
 
-    let mut opus_encoder = Encoder::new(config.sample_rate, channels, opus::Application::Voip)
-        .expect("falied to create opus encoder");
+    let mut opus_encoder = Encoder::builder(config.sample_rate, channels, ropus::Application::Voip)
+        .build()
+        .unwrap();
 
     let mut encoded_frame_buffer = [0u8; 1024];
 
