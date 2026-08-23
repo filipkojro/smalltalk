@@ -12,15 +12,27 @@ struct Client {
     audio_streams: Option<Vec<AudioStreamInfo>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 enum ServerEvent {
-    NewStream(u32),
+    NewAudioStream(AudioStreamInfo),
+    SendAllStreams,
+    SendAllOtherStreams(u32),
     UserConnected(u32),
     UserDisconnected(u32),
-    ClosedStream(u32),
 }
 
 type State = Arc<RwLock<HashMap<u32, Client>>>;
+
+fn scrape_all_client_streams_info(clients: &HashMap<u32, Client>) -> Vec<AudioStreamInfo> {
+    let mut all_audio_streams_info: Vec<AudioStreamInfo> = Vec::new();
+    for (_, data) in clients {
+        if let Some(audio_streams_info) = &data.audio_streams {
+            all_audio_streams_info.extend(audio_streams_info.iter().cloned());
+        }
+    }
+
+    return all_audio_streams_info;
+}
 
 #[tokio::main]
 async fn main() {
@@ -101,7 +113,7 @@ async fn main() {
                                                 audio_streams: None,
                                             },
                                         );
-                                        let _ = global_event_tx_clone.send(ServerEvent::UserConnected(current_client_id));
+
                                         println!("new client: {}, from: {}", current_client_id, tcp_address);
                                         let _ = tcp_stream
                                             .write_all(
@@ -115,9 +127,47 @@ async fn main() {
                                                 .as_bytes(),
                                             )
                                             .await;
+
+                                        let _ = global_event_tx_clone.send(ServerEvent::UserConnected(current_client_id));
                                     }
                                     TcpRequestData::NewAudioStream { audio_stream_info } => {
+                                        if let Some(client) = tcp_state.write().await.get_mut(&current_client_id) {
+                                            if let Some(audio_streams) = &mut client.audio_streams {
+                                                audio_streams.push(audio_stream_info);
+                                            } else {
+                                                client.audio_streams = Some(vec![audio_stream_info]);
+                                            }
+                                        }
+                                        let _ = tcp_stream
+                                            .write_all(
+                                                serde_json::to_string(&TcpResponse {
+                                                    status: ResponseStatus::Ok,
+                                                    data: shared::TcpResponseData::NewAudioStreamAccepted {
+                                                        audio_stream_id: audio_stream_info.stream_id,
+                                                    },
+                                                })
+                                                .expect("failed to parse response json TcpRequestData::NewConnection")
+                                                .as_bytes(),
+                                            )
+                                            .await;
 
+                                        let _ = global_event_tx_clone.send(ServerEvent::SendAllOtherStreams(current_client_id));
+                                    }
+                                    TcpRequestData::DropAudioStream { audio_stream_id } => {
+                                        if let Some(client) = tcp_state.write().await.get_mut(&current_client_id) {
+                                            if let Some(audio_streams) = &mut client.audio_streams {
+                                                let mut maybe_idx: Option<usize> = None;
+                                                for (i, audio_stream) in audio_streams.iter_mut().enumerate() {
+                                                    if audio_stream.stream_id == audio_stream_id {
+                                                        maybe_idx = Some(i);
+                                                    }
+                                                }
+                                                if let Some(idx) = maybe_idx {
+                                                    audio_streams.remove(idx);
+                                                }
+                                            }
+                                        }
+                                        let _ = global_event_tx_clone.send(ServerEvent::SendAllOtherStreams(current_client_id));
                                     }
                                     _ => eprintln!("i dont support other requests yet"),
                                 },
@@ -131,29 +181,71 @@ async fn main() {
                             Ok(event) => {
                                 match event {
                                     ServerEvent::UserConnected(new_user_id) => {
-                                        let _ = tcp_stream
-                                            .write_all(
-                                                serde_json::to_string(&TcpResponse {
-                                                    status: ResponseStatus::Ok,
-                                                    data: shared::TcpResponseData::UserConnected {
-                                                        user_id: new_user_id
-                                                    },
-                                                })
-                                                .expect("failed to parse response json ServerEvent::UserConnected")
-                                                .as_bytes(),
-                                            )
-                                            .await;
+                                        if new_user_id != current_client_id {
+                                            let _ = tcp_stream
+                                                .write_all(
+                                                    serde_json::to_string(&TcpResponse {
+                                                        status: ResponseStatus::Ok,
+                                                        data: shared::TcpResponseData::UserConnected {
+                                                            user_id: new_user_id
+                                                        },
+                                                    })
+                                                    .expect("failed to parse response json ServerEvent::UserConnected")
+                                                    .as_bytes(),
+                                                )
+                                                .await;
+
+                                            let _ = global_event_tx_clone.send(ServerEvent::SendAllOtherStreams(current_client_id));
+                                        }
                                     }
                                     ServerEvent::UserDisconnected(user_id) => {
+                                        if user_id != current_client_id {
+                                            let _ = tcp_stream
+                                                .write_all(
+                                                    serde_json::to_string(&TcpResponse {
+                                                        status: ResponseStatus::Ok,
+                                                        data: shared::TcpResponseData::UserDisconnected {
+                                                            user_id: user_id
+                                                        },
+                                                    })
+                                                    .expect("failed to parse response json ServerEvent::UserConnected")
+                                                    .as_bytes(),
+                                                )
+                                                .await;
+
+                                            let _ = global_event_tx_clone.send(ServerEvent::SendAllOtherStreams(current_client_id));
+                                        }
+                                    }
+                                    ServerEvent::SendAllOtherStreams(id) => {
+                                        if current_client_id != id {
+                                            let clients = tcp_state.read().await;
+
+                                            let _ = tcp_stream
+                                                .write_all(
+                                                    serde_json::to_string(&TcpResponse {
+                                                        status: ResponseStatus::Ok,
+                                                        data: shared::TcpResponseData::AudioStreamsFullUpdate {
+                                                            audio_stream_info: scrape_all_client_streams_info(&clients),
+                                                        },
+                                                    })
+                                                    .expect("failed to parse response json TcpRequestData::NewConnection")
+                                                    .as_bytes(),
+                                                )
+                                                .await;
+                                        }
+                                    }
+                                    ServerEvent::SendAllStreams => {
+                                        let clients = tcp_state.read().await;
+
                                         let _ = tcp_stream
                                             .write_all(
                                                 serde_json::to_string(&TcpResponse {
                                                     status: ResponseStatus::Ok,
-                                                    data: shared::TcpResponseData::UserDisconnected {
-                                                        user_id: user_id
+                                                    data: shared::TcpResponseData::AudioStreamsFullUpdate {
+                                                        audio_stream_info: scrape_all_client_streams_info(&clients),
                                                     },
                                                 })
-                                                .expect("failed to parse response json ServerEvent::UserConnected")
+                                                .expect("failed to parse response json TcpRequestData::NewConnection")
                                                 .as_bytes(),
                                             )
                                             .await;
