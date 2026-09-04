@@ -8,19 +8,13 @@ use tokio::{
     sync::broadcast::{Receiver, Sender},
 };
 
-use crate::models::{
-    ClientEvent, ClientInfo, InputAudioStreamsConsumers, InputAudioStreamsEncoders,
-    InputAudioStreamsInfo, InputAudioStreamsProducers,
-};
+use crate::models::{AudioControl, ClientEvent, ClientInfo};
 
 pub async fn tcp_connection(
     client_info: Arc<RwLock<ClientInfo>>,
     global_event_tx: Sender<ClientEvent>,
     mut global_event_rx: Receiver<ClientEvent>,
-    active_input_audio_streams_producers: InputAudioStreamsProducers,
-    active_input_audio_streams_consumers: InputAudioStreamsConsumers,
-    active_input_audio_streams_encoders: InputAudioStreamsEncoders,
-    active_input_audio_streams_info: InputAudioStreamsInfo,
+    audio_control: Arc<AudioControl>,
 ) {
     let server_address = {
         let info = client_info.read().unwrap();
@@ -62,15 +56,15 @@ pub async fn tcp_connection(
                                     println!("user disconnected: {}", user_id);
                                 }
                                 TcpResponseData::AudioStreamsFullUpdate { audio_stream_info } => {
-                                    let mut producer_map = active_input_audio_streams_producers.lock().unwrap();
+                                    let mut producer_map = audio_control.active_input_audio_streams_producers.lock().unwrap();
                                     producer_map.clear();
-                                    let mut consumer_map = active_input_audio_streams_consumers.lock().unwrap();
+                                    let mut consumer_map = audio_control.active_input_audio_streams_consumers.lock().unwrap();
                                     consumer_map.clear();
 
-                                    let mut encoder_map = active_input_audio_streams_encoders.write().unwrap();
+                                    let mut encoder_map = audio_control.active_input_audio_streams_encoders.write().unwrap();
                                     encoder_map.clear();
 
-                                    let mut info_map = active_input_audio_streams_info.write().unwrap();
+                                    let mut info_map = audio_control.active_input_audio_streams_info.write().unwrap();
                                     info_map.clear();
 
 

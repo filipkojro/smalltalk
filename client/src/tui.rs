@@ -1,5 +1,5 @@
 use cpal::{
-    Device, SAMPLE_RATE_48K, StreamConfig,
+    Device, SAMPLE_RATE_48K, SampleFormat, StreamConfig,
     traits::{DeviceTrait, HostTrait},
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
@@ -8,14 +8,17 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
     style::Style,
-    widgets::{Block, Row, Table, TableState},
+    widgets::{Block, Paragraph, Row, Table, TableState},
 };
-use std::{sync::Arc, vec};
-use tokio::net::UdpSocket;
+use std::{
+    sync::{Arc, RwLock},
+    vec,
+};
+use tokio::sync::broadcast::Sender;
 
-use crate::models::{
-    InputAudioStreamsConsumers, InputAudioStreamsEncoders, InputAudioStreamsInfo,
-    InputAudioStreamsProducers, TuiScreen,
+use crate::{
+    audio_streams::{audio_stream_receiver, audio_stream_spawner},
+    models::{AudioControl, ClientEvent, ClientInfo, TuiScreen},
 };
 
 pub struct Tui {
@@ -32,37 +35,86 @@ impl Tui {
     pub fn run(
         &mut self,
         terminal: &mut DefaultTerminal,
-        active_input_audio_streams_producers: InputAudioStreamsProducers,
-        active_input_audio_streams_consumers: InputAudioStreamsConsumers,
-        active_input_audio_streams_encoders: InputAudioStreamsEncoders,
-        active_input_audio_streams_info: InputAudioStreamsInfo,
-        udp_socket: Arc<UdpSocket>,
+        audio_control: Arc<AudioControl>,
+        global_event_tx: Sender<ClientEvent>,
+        clinet_info: Arc<RwLock<ClientInfo>>,
     ) {
         loop {
             match self.current_screen {
                 TuiScreen::Exit => {
                     break;
                 }
+                TuiScreen::Blank => self.current_screen = BlankScreen::new().run(terminal),
                 TuiScreen::DeviceSelect => {
-                    self.current_screen = DeviceSelectScreen::new().run(terminal);
+                    self.current_screen = DeviceSelectScreen::new(
+                        audio_control.clone(),
+                        global_event_tx.clone(),
+                        clinet_info.clone(),
+                    )
+                    .run(terminal);
                 }
             }
         }
     }
 }
 
-#[derive(Debug)]
+struct BlankScreen {
+    exit: bool,
+}
+
+impl BlankScreen {
+    pub fn new() -> Self {
+        Self { exit: false }
+    }
+
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> TuiScreen {
+        while !self.exit {
+            terminal
+                .draw(|frame| self.draw(frame))
+                .expect("failed to draw");
+            self.handle_events();
+        }
+
+        return TuiScreen::Exit;
+    }
+
+    fn draw(&mut self, frame: &mut Frame) {
+        frame.render_widget(Paragraph::new("q - quit"), frame.area());
+    }
+
+    fn handle_events(&mut self) {
+        match event::read().expect("failed to read event") {
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                match key_event.code {
+                    KeyCode::Char('q') => self.exit = true,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 struct DeviceSelectScreen {
     exit: bool,
+    exit_screen: TuiScreen,
     input_device_state: TableState,
     output_device_state: TableState,
     input_devices: Vec<(Device, StreamConfig)>,
     output_devices: Vec<(Device, StreamConfig)>,
     selected_selection: u8,
+
+    audio_control: Arc<AudioControl>,
+    global_event_tx: Sender<ClientEvent>,
+    clinet_info: Arc<RwLock<ClientInfo>>,
 }
 
 impl DeviceSelectScreen {
-    pub fn new() -> Self {
+    pub fn new(
+        audio_control: Arc<AudioControl>,
+        global_event_tx: Sender<ClientEvent>,
+        clinet_info: Arc<RwLock<ClientInfo>>,
+    ) -> Self {
         let _print_gag = Gag::stderr().ok();
 
         let host = cpal::default_host();
@@ -76,8 +128,10 @@ impl DeviceSelectScreen {
                         if let Some(input_config) =
                             supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
                         {
-                            input_devices.push((possible_input_device, input_config.into()));
-                            break;
+                            if input_config.sample_format() == SampleFormat::F32 {
+                                input_devices.push((possible_input_device, input_config.into()));
+                                break;
+                            }
                         }
                     }
                 }
@@ -93,8 +147,10 @@ impl DeviceSelectScreen {
                         if let Some(output_config) =
                             supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
                         {
-                            output_devices.push((possible_output_device, output_config.into()));
-                            break;
+                            if output_config.sample_format() == SampleFormat::F32 {
+                                output_devices.push((possible_output_device, output_config.into()));
+                                break;
+                            }
                         }
                     }
                 }
@@ -103,11 +159,16 @@ impl DeviceSelectScreen {
 
         Self {
             exit: false,
+            exit_screen: TuiScreen::Exit,
             input_device_state: TableState::default(),
             output_device_state: TableState::default(),
             input_devices: input_devices,
             output_devices: output_devices,
             selected_selection: 0,
+
+            audio_control: audio_control,
+            global_event_tx: global_event_tx,
+            clinet_info: clinet_info,
         }
     }
 
@@ -119,7 +180,7 @@ impl DeviceSelectScreen {
             self.handle_events();
         }
 
-        return TuiScreen::Exit;
+        return self.exit_screen;
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -231,8 +292,7 @@ impl DeviceSelectScreen {
             KeyCode::Up => self.decrement_table(),
             KeyCode::Left => self.selected_selection = 0,
             KeyCode::Right => self.selected_selection = 1,
-            // KeyCode::Down => self.increment_list(),
-            // KeyCode::Enter => self.get_value(),
+            KeyCode::Enter => self.connect_devices(),
             _ => {}
         }
     }
@@ -254,6 +314,50 @@ impl DeviceSelectScreen {
             self.input_device_state.scroll_up_by(1);
         } else {
             self.output_device_state.scroll_up_by(1);
+        }
+    }
+
+    fn connect_devices(&mut self) {
+        if let (Some(input_device_row), Some(output_device_row)) = (
+            self.input_device_state.selected(),
+            self.output_device_state.selected(),
+        ) {
+            let (input_device, input_config) = self
+                .input_devices
+                .get(input_device_row)
+                .expect("failed to get input config");
+            let (output_device, output_config) = self
+                .output_devices
+                .get(output_device_row)
+                .expect("failed to get output config");
+
+            tokio::spawn(audio_stream_receiver(
+                output_device.clone(),
+                output_config.clone(),
+                self.audio_control
+                    .active_input_audio_streams_producers
+                    .clone(),
+                self.audio_control
+                    .active_input_audio_streams_consumers
+                    .clone(),
+                self.audio_control
+                    .active_input_audio_streams_encoders
+                    .clone(),
+                self.audio_control.active_input_audio_streams_info.clone(),
+                self.audio_control.udp_socket.clone(),
+            ));
+
+            tokio::spawn(audio_stream_spawner(
+                input_device.clone(),
+                input_config.clone(),
+                self.global_event_tx.clone(),
+                self.global_event_tx.subscribe(),
+                self.audio_control.udp_socket.clone(),
+                self.clinet_info.clone(),
+            ));
+
+            self.exit_screen = TuiScreen::Blank;
+            self.exit = true;
         }
     }
 

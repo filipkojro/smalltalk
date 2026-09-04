@@ -15,8 +15,8 @@ use tokio::sync::broadcast;
 use crate::{
     audio_streams::{audio_stream_receiver, audio_stream_spawner},
     models::{
-        CliArgs, ClientEvent, ClientInfo, InputAudioStreamsConsumers, InputAudioStreamsEncoders,
-        InputAudioStreamsInfo, InputAudioStreamsProducers,
+        AudioControl, CliArgs, ClientEvent, ClientInfo, InputAudioStreamsConsumers,
+        InputAudioStreamsEncoders, InputAudioStreamsInfo, InputAudioStreamsProducers,
     },
     tcp_connection::tcp_connection,
     tui::Tui,
@@ -41,21 +41,18 @@ async fn main() {
 
     let udp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
 
-    if cli.connect_with_defaults == None {
-        ratatui::run(|terminal| {
-            Tui::new().run(
-                terminal,
-                active_input_audio_streams_producers.clone(),
-                active_input_audio_streams_consumers.clone(),
-                active_input_audio_streams_encoders.clone(),
-                active_input_audio_streams_info.clone(),
-                udp_socket.clone(),
-            )
-        });
-    } else {
+    let audio_control: Arc<AudioControl> = Arc::new(AudioControl {
+        active_input_audio_streams_producers: active_input_audio_streams_producers.clone(),
+        active_input_audio_streams_consumers: active_input_audio_streams_consumers.clone(),
+        active_input_audio_streams_encoders: active_input_audio_streams_encoders.clone(),
+        active_input_audio_streams_info: active_input_audio_streams_info.clone(),
+        udp_socket: udp_socket.clone(),
+    });
+
+    if let Some(server_ip) = cli.connect_with_defaults {
         let client_info: Arc<RwLock<ClientInfo>> = Arc::new(RwLock::new(ClientInfo {
             client_id: 0,
-            server_address: cli.connect_with_defaults.unwrap(),
+            server_address: server_ip,
             connected: false,
         }));
 
@@ -63,10 +60,7 @@ async fn main() {
             client_info.clone(),
             global_event_tx.clone(),
             global_event_tx.subscribe(),
-            active_input_audio_streams_producers.clone(),
-            active_input_audio_streams_consumers.clone(),
-            active_input_audio_streams_encoders.clone(),
-            active_input_audio_streams_info.clone(),
+            audio_control.clone(),
         ));
 
         let _ = global_event_tx.send(ClientEvent::NewConnection);
@@ -111,5 +105,31 @@ async fn main() {
 
         tokio::signal::ctrl_c().await.expect("failed to close");
         println!("shutting down");
+    }
+
+    if let Some(server_ip) = cli.server_ip {
+        let client_info: Arc<RwLock<ClientInfo>> = Arc::new(RwLock::new(ClientInfo {
+            client_id: 0,
+            server_address: server_ip,
+            connected: false,
+        }));
+
+        tokio::spawn(tcp_connection(
+            client_info.clone(),
+            global_event_tx.clone(),
+            global_event_tx.subscribe(),
+            audio_control.clone(),
+        ));
+
+        let _ = global_event_tx.send(ClientEvent::NewConnection);
+
+        ratatui::run(|terminal| {
+            Tui::new().run(
+                terminal,
+                audio_control.clone(),
+                global_event_tx.clone(),
+                client_info.clone(),
+            )
+        });
     }
 }

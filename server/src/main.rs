@@ -11,7 +11,7 @@ use tokio::{
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
-    #[arg(short, long, default_value("0.0.0.0:8080"))]
+    #[arg(short, long, default_value("0.0.0.0:6767"))]
     server_ip: Option<String>,
 }
 
