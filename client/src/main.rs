@@ -1,9 +1,10 @@
 mod audio_streams;
 mod models;
 mod tcp_connection;
+mod tui;
 
 use clap::Parser;
-use cpal::traits::HostTrait;
+use cpal::traits::{DeviceTrait, HostTrait};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
@@ -18,17 +19,12 @@ use crate::{
         InputAudioStreamsInfo, InputAudioStreamsProducers,
     },
     tcp_connection::tcp_connection,
+    tui::Tui,
 };
 
 #[tokio::main]
 async fn main() {
     let cli = CliArgs::parse();
-
-    let client_info: Arc<RwLock<ClientInfo>> = Arc::new(RwLock::new(ClientInfo {
-        client_id: 0,
-        server_address: cli.server_ip.unwrap(),
-        connected: false,
-    }));
 
     let (global_event_tx, _) = broadcast::channel::<ClientEvent>(16);
 
@@ -43,49 +39,77 @@ async fn main() {
     let active_input_audio_streams_info: InputAudioStreamsInfo =
         Arc::new(RwLock::new(HashMap::new()));
 
-    tokio::spawn(tcp_connection(
-        client_info.clone(),
-        global_event_tx.clone(),
-        global_event_tx.subscribe(),
-        active_input_audio_streams_producers.clone(),
-        active_input_audio_streams_consumers.clone(),
-        active_input_audio_streams_encoders.clone(),
-        active_input_audio_streams_info.clone(),
-    ));
-
-    let _ = global_event_tx.send(ClientEvent::NewConnection);
-
     let udp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
 
-    let host = cpal::default_host();
+    if cli.connect_with_defaults == None {
+        ratatui::run(|terminal| {
+            Tui::new().run(
+                terminal,
+                active_input_audio_streams_producers.clone(),
+                active_input_audio_streams_consumers.clone(),
+                active_input_audio_streams_encoders.clone(),
+                active_input_audio_streams_info.clone(),
+                udp_socket.clone(),
+            )
+        });
+    } else {
+        let client_info: Arc<RwLock<ClientInfo>> = Arc::new(RwLock::new(ClientInfo {
+            client_id: 0,
+            server_address: cli.connect_with_defaults.unwrap(),
+            connected: false,
+        }));
 
-    let input_device = host
-        .default_input_device()
-        .expect("no input device available");
-    let output_device = host
-        .default_output_device()
-        .expect("no output device available");
+        tokio::spawn(tcp_connection(
+            client_info.clone(),
+            global_event_tx.clone(),
+            global_event_tx.subscribe(),
+            active_input_audio_streams_producers.clone(),
+            active_input_audio_streams_consumers.clone(),
+            active_input_audio_streams_encoders.clone(),
+            active_input_audio_streams_info.clone(),
+        ));
 
-    println!("input device: {}", input_device);
-    println!("output device: {}", output_device);
+        let _ = global_event_tx.send(ClientEvent::NewConnection);
 
-    tokio::spawn(audio_stream_receiver(
-        output_device,
-        active_input_audio_streams_producers.clone(),
-        active_input_audio_streams_consumers.clone(),
-        active_input_audio_streams_encoders.clone(),
-        active_input_audio_streams_info.clone(),
-        udp_socket.clone(),
-    ));
+        let host = cpal::default_host();
 
-    tokio::spawn(audio_stream_spawner(
-        input_device,
-        global_event_tx.clone(),
-        global_event_tx.subscribe(),
-        udp_socket.clone(),
-        client_info.clone(),
-    ));
+        let input_device = host
+            .default_input_device()
+            .expect("no input device available");
+        let input_device_config = input_device
+            .default_input_config()
+            .expect("failed to get default input config");
 
-    tokio::signal::ctrl_c().await.expect("failed to close");
-    println!("shutting down");
+        let output_device = host
+            .default_output_device()
+            .expect("no output device available");
+        let output_device_config = output_device
+            .default_output_config()
+            .expect("failed to get default output config");
+
+        println!("input device: {}", input_device);
+        println!("output device: {}", output_device);
+
+        tokio::spawn(audio_stream_receiver(
+            output_device,
+            output_device_config.into(),
+            active_input_audio_streams_producers.clone(),
+            active_input_audio_streams_consumers.clone(),
+            active_input_audio_streams_encoders.clone(),
+            active_input_audio_streams_info.clone(),
+            udp_socket.clone(),
+        ));
+
+        tokio::spawn(audio_stream_spawner(
+            input_device,
+            input_device_config.into(),
+            global_event_tx.clone(),
+            global_event_tx.subscribe(),
+            udp_socket.clone(),
+            client_info.clone(),
+        ));
+
+        tokio::signal::ctrl_c().await.expect("failed to close");
+        println!("shutting down");
+    }
 }

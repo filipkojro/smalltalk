@@ -13,3 +13,6 @@ tokio = { version = "1.53.1", features = ["full"] }
 rand = "0.10.2"
 clap = { version = "4.6.6", features = ["derive"] }
 ropus = "0.12.18"
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+gag = "1.0.0"

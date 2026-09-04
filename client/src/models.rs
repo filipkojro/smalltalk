@@ -10,8 +10,14 @@ use std::{
 #[derive(Parser)]
 #[command(version, about)]
 pub struct CliArgs {
-    #[arg(short, long, required(true))]
-    pub server_ip: Option<String>,
+    #[arg(short, long, required(false))]
+    pub connect_with_defaults: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum TuiScreen {
+    DeviceSelect,
+    Exit,
 }
 
 #[derive(Clone)]
