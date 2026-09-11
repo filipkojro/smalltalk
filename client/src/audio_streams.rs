@@ -165,7 +165,6 @@ pub async fn audio_stream_spawner(
             }));
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
     loop {
