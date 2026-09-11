@@ -180,7 +180,7 @@ pub async fn audio_stream_spawner(
         }
     }
 
-    let ring_buffer_ms = 150.0;
+    let ring_buffer_ms = 80.0;
     let ring_buffer_frames = (ring_buffer_ms / 1000.0) * input_device_config.sample_rate as f32;
     let ring_buffer_samples = ring_buffer_frames as usize * input_device_config.channels as usize;
     let ring_buffer_size = ring_buffer_samples;
@@ -204,10 +204,10 @@ pub async fn audio_stream_spawner(
     let mut frame_buffer = vec![0.0; frames_needed];
 
     let channels: ropus::Channels = {
-        if input_device_config.channels == 1 {
-            ropus::Channels::Mono
-        } else {
+        if input_device_config.channels == 2 {
             ropus::Channels::Stereo
+        } else {
+            ropus::Channels::Mono
         }
     };
 

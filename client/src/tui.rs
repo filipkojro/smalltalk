@@ -37,7 +37,7 @@ impl Tui {
         terminal: &mut DefaultTerminal,
         audio_control: Arc<AudioControl>,
         global_event_tx: Sender<ClientEvent>,
-        clinet_info: Arc<RwLock<ClientInfo>>,
+        client_info: Arc<RwLock<ClientInfo>>,
     ) {
         loop {
             match self.current_screen {
@@ -49,7 +49,7 @@ impl Tui {
                     self.current_screen = DeviceSelectScreen::new(
                         audio_control.clone(),
                         global_event_tx.clone(),
-                        clinet_info.clone(),
+                        client_info.clone(),
                     )
                     .run(terminal);
                 }
@@ -106,14 +106,14 @@ struct DeviceSelectScreen {
 
     audio_control: Arc<AudioControl>,
     global_event_tx: Sender<ClientEvent>,
-    clinet_info: Arc<RwLock<ClientInfo>>,
+    client_info: Arc<RwLock<ClientInfo>>,
 }
 
 impl DeviceSelectScreen {
     pub fn new(
         audio_control: Arc<AudioControl>,
         global_event_tx: Sender<ClientEvent>,
-        clinet_info: Arc<RwLock<ClientInfo>>,
+        client_info: Arc<RwLock<ClientInfo>>,
     ) -> Self {
         let _print_gag = Gag::stderr().ok();
 
@@ -121,14 +121,49 @@ impl DeviceSelectScreen {
 
         let mut input_devices: Vec<(Device, StreamConfig)> = Vec::new();
 
+        if let Some(default_input_device) = host.default_input_device() {
+            if let Ok(default_config) = default_input_device.default_input_config() {
+                if default_config.sample_rate() == SAMPLE_RATE_48K
+                    && default_config.sample_format() == SampleFormat::F32
+                    && (default_config.channels() == 1)
+                {
+                    input_devices.push((default_input_device.clone(), default_config.into()));
+                }
+            } else if let Ok(supported_configs) = default_input_device.supported_input_configs() {
+                for supported_config in supported_configs {
+                    if let Some(input_config) =
+                        supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
+                    {
+                        if input_config.sample_format() == SampleFormat::F32
+                            && (input_config.channels() == 1)
+                        {
+                            input_devices.push((default_input_device, input_config.into()));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Ok(possible_input_devices) = host.input_devices() {
             for possible_input_device in possible_input_devices {
+                if let Ok(default_config) = possible_input_device.default_input_config() {
+                    if default_config.sample_rate() == SAMPLE_RATE_48K
+                        && default_config.sample_format() == SampleFormat::F32
+                        && (default_config.channels() == 1)
+                    {
+                        input_devices.push((possible_input_device.clone(), default_config.into()));
+                        continue;
+                    }
+                }
                 if let Ok(supported_configs) = possible_input_device.supported_input_configs() {
                     for supported_config in supported_configs {
                         if let Some(input_config) =
                             supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
                         {
-                            if input_config.sample_format() == SampleFormat::F32 {
+                            if input_config.sample_format() == SampleFormat::F32
+                                && (input_config.channels() == 1)
+                            {
                                 input_devices.push((possible_input_device, input_config.into()));
                                 break;
                             }
@@ -140,14 +175,50 @@ impl DeviceSelectScreen {
 
         let mut output_devices: Vec<(Device, StreamConfig)> = Vec::new();
 
+        if let Some(default_output_device) = host.default_output_device() {
+            if let Ok(default_config) = default_output_device.default_output_config() {
+                if default_config.sample_rate() == SAMPLE_RATE_48K
+                    && default_config.sample_format() == SampleFormat::F32
+                    && (default_config.channels() == 1 || default_config.channels() == 2)
+                {
+                    output_devices.push((default_output_device.clone(), default_config.into()));
+                }
+            } else if let Ok(supported_configs) = default_output_device.supported_output_configs() {
+                for supported_config in supported_configs {
+                    if let Some(output_config) =
+                        supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
+                    {
+                        if output_config.sample_format() == SampleFormat::F32
+                            && (output_config.channels() == 1 || output_config.channels() == 2)
+                        {
+                            output_devices.push((default_output_device, output_config.into()));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Ok(possible_output_devices) = host.output_devices() {
             for possible_output_device in possible_output_devices {
+                if let Ok(default_config) = possible_output_device.default_output_config() {
+                    if default_config.sample_rate() == SAMPLE_RATE_48K
+                        && default_config.sample_format() == SampleFormat::F32
+                        && (default_config.channels() == 1 || default_config.channels() == 2)
+                    {
+                        output_devices
+                            .push((possible_output_device.clone(), default_config.into()));
+                        continue;
+                    }
+                }
                 if let Ok(supported_configs) = possible_output_device.supported_output_configs() {
                     for supported_config in supported_configs {
                         if let Some(output_config) =
                             supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
                         {
-                            if output_config.sample_format() == SampleFormat::F32 {
+                            if output_config.sample_format() == SampleFormat::F32
+                                && (output_config.channels() == 1 || output_config.channels() == 2)
+                            {
                                 output_devices.push((possible_output_device, output_config.into()));
                                 break;
                             }
@@ -157,18 +228,24 @@ impl DeviceSelectScreen {
             }
         }
 
+        let mut input_state = TableState::default();
+        input_state.select(Some(0));
+
+        let mut output_state = TableState::default();
+        output_state.select(Some(0));
+
         Self {
             exit: false,
             exit_screen: TuiScreen::Exit,
-            input_device_state: TableState::default(),
-            output_device_state: TableState::default(),
+            input_device_state: input_state,
+            output_device_state: output_state,
             input_devices: input_devices,
             output_devices: output_devices,
             selected_selection: 0,
 
             audio_control: audio_control,
             global_event_tx: global_event_tx,
-            clinet_info: clinet_info,
+            client_info: client_info,
         }
     }
 
@@ -193,23 +270,18 @@ impl DeviceSelectScreen {
         let left_block = block.inner(outer_layout[0]);
         let right_block = block.inner(outer_layout[1]);
 
-        let widths = [
-            Constraint::Percentage(100),
-            Constraint::Min(8),
-            Constraint::Min(11),
-        ];
+        let widths = [Constraint::Percentage(100), Constraint::Min(8)];
 
         let mut input_device_rows: Vec<Row> = Vec::new();
         for (device, config) in self.input_devices.iter() {
             input_device_rows.push(Row::new(vec![
                 device.description().unwrap().name().to_string(),
                 config.channels.to_string(),
-                config.sample_rate.to_string(),
             ]));
         }
         let input_device_table = Table::new(input_device_rows, widths)
             .header(
-                Row::new(vec!["device name", "channels", "sample rate"])
+                Row::new(vec!["device name", "channels"])
                     .style(Style::new().bold())
                     .bottom_margin(1),
             )
@@ -240,12 +312,11 @@ impl DeviceSelectScreen {
             output_device_rows.push(Row::new(vec![
                 device.description().unwrap().name().to_string(),
                 config.channels.to_string(),
-                config.sample_rate.to_string(),
             ]));
         }
         let output_device_table = Table::new(output_device_rows, widths)
             .header(
-                Row::new(vec!["device name", "channels", "sample rate"])
+                Row::new(vec!["device name", "channels"])
                     .style(Style::new().bold())
                     .bottom_margin(1),
             )
@@ -353,25 +424,11 @@ impl DeviceSelectScreen {
                 self.global_event_tx.clone(),
                 self.global_event_tx.subscribe(),
                 self.audio_control.udp_socket.clone(),
-                self.clinet_info.clone(),
+                self.client_info.clone(),
             ));
 
             self.exit_screen = TuiScreen::Blank;
             self.exit = true;
         }
     }
-
-    // fn get_value(&mut self) {
-    //     self.table_state.selected();
-    // }
-
-    // fn increment_list(&mut self) {
-    //     self.list_state.scroll_down_by(1);
-    //     self.table_state.scroll_down_by(1);
-    // }
-
-    // fn decrement_list(&mut self) {
-    //     self.list_state.scroll_up_by(1);
-    //     self.table_state.scroll_up_by(1);
-    // }
 }
