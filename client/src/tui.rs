@@ -172,7 +172,6 @@ impl DeviceSelectScreen {
         if let Some(default_output_device) = host.default_output_device() {
             if let Ok(default_config) = default_output_device.default_output_config() {
                 if default_config.sample_rate() == SAMPLE_RATE_48K
-                    && default_config.sample_format() == SampleFormat::F32
                     && (default_config.channels() == 1 || default_config.channels() == 2)
                 {
                     output_devices.push((default_output_device.clone(), default_config.into()));
@@ -182,9 +181,7 @@ impl DeviceSelectScreen {
                     if let Some(output_config) =
                         supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
                     {
-                        if output_config.sample_format() == SampleFormat::F32
-                            && (output_config.channels() == 1 || output_config.channels() == 2)
-                        {
+                        if output_config.channels() == 1 || output_config.channels() == 2 {
                             output_devices.push((default_output_device, output_config.into()));
                             break;
                         }
@@ -197,7 +194,6 @@ impl DeviceSelectScreen {
             for possible_output_device in possible_output_devices {
                 if let Ok(default_config) = possible_output_device.default_output_config() {
                     if default_config.sample_rate() == SAMPLE_RATE_48K
-                        && default_config.sample_format() == SampleFormat::F32
                         && (default_config.channels() == 1 || default_config.channels() == 2)
                     {
                         output_devices
@@ -210,9 +206,7 @@ impl DeviceSelectScreen {
                         if let Some(output_config) =
                             supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
                         {
-                            if output_config.sample_format() == SampleFormat::F32
-                                && (output_config.channels() == 1 || output_config.channels() == 2)
-                            {
+                            if output_config.channels() == 1 || output_config.channels() == 2 {
                                 output_devices.push((possible_output_device, output_config.into()));
                                 break;
                             }

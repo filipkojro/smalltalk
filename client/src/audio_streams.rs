@@ -1,5 +1,5 @@
 use cpal::{
-    Device, FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig,
+    Device, FromSample, Sample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig,
     traits::{DeviceTrait, StreamTrait},
 };
 use ringbuf::{
@@ -21,16 +21,16 @@ use crate::models::{
     InputAudioStreamsInfo, InputAudioStreamsProducers,
 };
 
-pub async fn audio_stream_receiver(
-    output_device: Device,
-    output_device_config: SupportedStreamConfig,
-    active_input_audio_streams_producers: InputAudioStreamsProducers,
+fn cpal_build_output_stream<T>(
+    output_device: &Device,
+    output_device_config: StreamConfig,
     active_input_audio_streams_consumers: InputAudioStreamsConsumers,
-    active_input_audio_streams_encoders: InputAudioStreamsEncoders,
-    active_input_audio_streams_info: InputAudioStreamsInfo,
-    udp_socket: Arc<UdpSocket>,
-) {
-    let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+) -> cpal::Stream
+where
+    T: SizedSample,
+    T: FromSample<f32>,
+{
+    let output_data_fn = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
         let mut streams = active_input_audio_streams_consumers.lock().unwrap();
         for sample in data {
             let mut mixed_value: f32 = 0.0;
@@ -42,14 +42,51 @@ pub async fn audio_stream_receiver(
                 }
             }
 
-            *sample = mixed_value;
+            *sample = mixed_value.to_sample::<T>();
         }
     };
-
     let err_fn = |err| eprintln!("stream error: {}", err);
-    let output_stream = output_device
-        .build_output_stream(output_device_config.into(), output_data_fn, err_fn, None)
+
+    return output_device
+        .build_output_stream(output_device_config, output_data_fn, err_fn, None)
         .expect("building output stream failed");
+}
+
+pub async fn audio_stream_receiver(
+    output_device: Device,
+    output_device_config: SupportedStreamConfig,
+    active_input_audio_streams_producers: InputAudioStreamsProducers,
+    active_input_audio_streams_consumers: InputAudioStreamsConsumers,
+    active_input_audio_streams_encoders: InputAudioStreamsEncoders,
+    active_input_audio_streams_info: InputAudioStreamsInfo,
+    udp_socket: Arc<UdpSocket>,
+) {
+    let output_stream = match output_device_config.sample_format() {
+        SampleFormat::F32 => cpal_build_output_stream::<f32>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
+        SampleFormat::I32 => cpal_build_output_stream::<i32>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
+        SampleFormat::I16 => cpal_build_output_stream::<i16>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
+        SampleFormat::U16 => cpal_build_output_stream::<u16>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
+        _ => {
+            eprintln!("unsupported output stream format :(");
+            return;
+        }
+    };
 
     output_stream.play().expect("failed to play output stream");
 
@@ -226,7 +263,7 @@ pub async fn audio_stream_spawner(
             cpal_build_input_stream::<u16>(&input_device, input_device_config.into(), producer)
         }
         _ => {
-            eprintln!("unsupported stream format :(");
+            eprintln!("unsupported input stream format :(");
             return;
         }
     };
