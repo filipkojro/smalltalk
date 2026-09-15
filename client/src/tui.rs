@@ -1,5 +1,5 @@
 use cpal::{
-    Device, SAMPLE_RATE_48K, SampleFormat, StreamConfig,
+    Device, SAMPLE_RATE_48K, SampleFormat, SupportedStreamConfig,
     traits::{DeviceTrait, HostTrait},
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
@@ -100,8 +100,8 @@ struct DeviceSelectScreen {
     exit_screen: TuiScreen,
     input_device_state: TableState,
     output_device_state: TableState,
-    input_devices: Vec<(Device, StreamConfig)>,
-    output_devices: Vec<(Device, StreamConfig)>,
+    input_devices: Vec<(Device, SupportedStreamConfig)>,
+    output_devices: Vec<(Device, SupportedStreamConfig)>,
     selected_selection: u8,
 
     audio_control: Arc<AudioControl>,
@@ -119,25 +119,22 @@ impl DeviceSelectScreen {
 
         let host = cpal::default_host();
 
-        let mut input_devices: Vec<(Device, StreamConfig)> = Vec::new();
+        let mut input_devices: Vec<(Device, SupportedStreamConfig)> = Vec::new();
 
         if let Some(default_input_device) = host.default_input_device() {
             if let Ok(default_config) = default_input_device.default_input_config() {
                 if default_config.sample_rate() == SAMPLE_RATE_48K
-                    && default_config.sample_format() == SampleFormat::F32
                     && (default_config.channels() == 1)
                 {
-                    input_devices.push((default_input_device.clone(), default_config.into()));
+                    input_devices.push((default_input_device.clone(), default_config));
                 }
             } else if let Ok(supported_configs) = default_input_device.supported_input_configs() {
                 for supported_config in supported_configs {
                     if let Some(input_config) =
                         supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
                     {
-                        if input_config.sample_format() == SampleFormat::F32
-                            && (input_config.channels() == 1)
-                        {
-                            input_devices.push((default_input_device, input_config.into()));
+                        if input_config.channels() == 1 {
+                            input_devices.push((default_input_device, input_config));
                             break;
                         }
                     }
@@ -149,10 +146,9 @@ impl DeviceSelectScreen {
             for possible_input_device in possible_input_devices {
                 if let Ok(default_config) = possible_input_device.default_input_config() {
                     if default_config.sample_rate() == SAMPLE_RATE_48K
-                        && default_config.sample_format() == SampleFormat::F32
                         && (default_config.channels() == 1)
                     {
-                        input_devices.push((possible_input_device.clone(), default_config.into()));
+                        input_devices.push((possible_input_device.clone(), default_config));
                         continue;
                     }
                 }
@@ -161,10 +157,8 @@ impl DeviceSelectScreen {
                         if let Some(input_config) =
                             supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
                         {
-                            if input_config.sample_format() == SampleFormat::F32
-                                && (input_config.channels() == 1)
-                            {
-                                input_devices.push((possible_input_device, input_config.into()));
+                            if input_config.channels() == 1 {
+                                input_devices.push((possible_input_device, input_config));
                                 break;
                             }
                         }
@@ -173,7 +167,7 @@ impl DeviceSelectScreen {
             }
         }
 
-        let mut output_devices: Vec<(Device, StreamConfig)> = Vec::new();
+        let mut output_devices: Vec<(Device, SupportedStreamConfig)> = Vec::new();
 
         if let Some(default_output_device) = host.default_output_device() {
             if let Ok(default_config) = default_output_device.default_output_config() {
@@ -276,7 +270,7 @@ impl DeviceSelectScreen {
         for (device, config) in self.input_devices.iter() {
             input_device_rows.push(Row::new(vec![
                 device.description().unwrap().name().to_string(),
-                config.channels.to_string(),
+                config.channels().to_string(),
             ]));
         }
         let input_device_table = Table::new(input_device_rows, widths)
@@ -311,7 +305,7 @@ impl DeviceSelectScreen {
         for (device, config) in self.output_devices.iter() {
             output_device_rows.push(Row::new(vec![
                 device.description().unwrap().name().to_string(),
-                config.channels.to_string(),
+                config.channels().to_string(),
             ]));
         }
         let output_device_table = Table::new(output_device_rows, widths)

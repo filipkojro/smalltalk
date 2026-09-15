@@ -1,10 +1,12 @@
 use cpal::{
-    Device, StreamConfig,
+    Device, FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig,
     traits::{DeviceTrait, StreamTrait},
 };
 use ringbuf::{
-    HeapRb,
+    HeapRb, SharedRb,
+    storage::Heap,
     traits::{Consumer, Observer, Producer, Split},
+    wrap::caching::Caching,
 };
 use ropus::Encoder;
 use shared::AudioStreamInfo;
@@ -21,7 +23,7 @@ use crate::models::{
 
 pub async fn audio_stream_receiver(
     output_device: Device,
-    output_device_config: StreamConfig,
+    output_device_config: SupportedStreamConfig,
     active_input_audio_streams_producers: InputAudioStreamsProducers,
     active_input_audio_streams_consumers: InputAudioStreamsConsumers,
     active_input_audio_streams_encoders: InputAudioStreamsEncoders,
@@ -46,7 +48,7 @@ pub async fn audio_stream_receiver(
 
     let err_fn = |err| eprintln!("stream error: {}", err);
     let output_stream = output_device
-        .build_output_stream(output_device_config, output_data_fn, err_fn, None)
+        .build_output_stream(output_device_config.into(), output_data_fn, err_fn, None)
         .expect("building output stream failed");
 
     output_stream.play().expect("failed to play output stream");
@@ -102,11 +104,11 @@ pub async fn audio_stream_receiver(
                 let mut active_streams_map = active_input_audio_streams_producers.lock().unwrap();
 
                 if let Some(producer) = active_streams_map.get_mut(&(client_id, stream_id)) {
-                    if stream_info.channels == output_device_config.channels {
+                    if stream_info.channels == output_device_config.channels() {
                         producer.push_slice(
                             &decoded_samples[..decoded_len * stream_info.channels as usize],
                         );
-                    } else if stream_info.channels > output_device_config.channels {
+                    } else if stream_info.channels > output_device_config.channels() {
                         for (i, frame) in decoded_samples
                             [..decoded_len * stream_info.channels as usize]
                             .chunks_exact(2)
@@ -121,7 +123,7 @@ pub async fn audio_stream_receiver(
                         );
                     } else {
                         for (i, frame) in decoded_samples_converted
-                            [..decoded_len * output_device_config.channels as usize]
+                            [..decoded_len * output_device_config.channels() as usize]
                             .chunks_exact_mut(2)
                             .enumerate()
                         {
@@ -131,7 +133,7 @@ pub async fn audio_stream_receiver(
 
                         producer.push_slice(
                             &decoded_samples_converted
-                                [..decoded_len * output_device_config.channels as usize],
+                                [..decoded_len * output_device_config.channels() as usize],
                         );
                     }
                 }
@@ -141,27 +143,50 @@ pub async fn audio_stream_receiver(
     }
 }
 
+fn cpal_build_input_stream<T>(
+    input_device: &Device,
+    input_device_config: StreamConfig,
+    mut producer: Caching<Arc<SharedRb<Heap<f32>>>, true, false>,
+) -> cpal::Stream
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    let input_data_fn = move |data: &[T], _: &cpal::InputCallbackInfo| {
+        for &sample in data {
+            let f32_sample: f32 = sample.to_sample::<f32>();
+
+            if producer.try_push(f32_sample).is_err() {}
+        }
+    };
+    let err_fn = |err| eprintln!("stream error: {}", err);
+
+    return input_device
+        .build_input_stream(input_device_config, input_data_fn, err_fn, None)
+        .expect("building input stream failed");
+}
+
 pub async fn audio_stream_spawner(
     input_device: Device,
-    input_device_config: StreamConfig,
+    input_device_config: SupportedStreamConfig,
     global_event_tx: Sender<ClientEvent>,
     mut global_event_rx: Receiver<ClientEvent>,
     udp_socket: Arc<UdpSocket>,
-    clinet_info: Arc<RwLock<ClientInfo>>,
+    client_info: Arc<RwLock<ClientInfo>>,
 ) {
     let current_stream_id: u8 = rand::random();
 
     loop {
         let (connected, client_id) = {
-            let info = clinet_info.read().unwrap();
+            let info = client_info.read().unwrap();
             (info.connected, info.client_id)
         };
         if connected {
             let _ = global_event_tx.send(ClientEvent::NewAudioStreamRequest(AudioStreamInfo {
                 client_id: client_id,
                 stream_id: current_stream_id,
-                channels: input_device_config.channels,
-                sample_rate: input_device_config.sample_rate,
+                channels: input_device_config.channels(),
+                sample_rate: input_device_config.sample_rate(),
             }));
             break;
         }
@@ -181,30 +206,38 @@ pub async fn audio_stream_spawner(
     }
 
     let ring_buffer_ms = 80.0;
-    let ring_buffer_frames = (ring_buffer_ms / 1000.0) * input_device_config.sample_rate as f32;
-    let ring_buffer_samples = ring_buffer_frames as usize * input_device_config.channels as usize;
+    let ring_buffer_frames = (ring_buffer_ms / 1000.0) * input_device_config.sample_rate() as f32;
+    let ring_buffer_samples = ring_buffer_frames as usize * input_device_config.channels() as usize;
     let ring_buffer_size = ring_buffer_samples;
     let ring_buffer = HeapRb::<f32>::new(ring_buffer_size);
-    let (mut producer, mut consumer) = ring_buffer.split();
+    let (producer, mut consumer) = ring_buffer.split();
 
-    let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
-        for &sample in data {
-            if producer.try_push(sample).is_err() {}
+    let input_stream = match input_device_config.sample_format() {
+        SampleFormat::F32 => {
+            cpal_build_input_stream::<f32>(&input_device, input_device_config.into(), producer)
+        }
+        SampleFormat::I32 => {
+            cpal_build_input_stream::<i32>(&input_device, input_device_config.into(), producer)
+        }
+        SampleFormat::I16 => {
+            cpal_build_input_stream::<i16>(&input_device, input_device_config.into(), producer)
+        }
+        SampleFormat::U16 => {
+            cpal_build_input_stream::<u16>(&input_device, input_device_config.into(), producer)
+        }
+        _ => {
+            eprintln!("unsupported stream format :(");
+            return;
         }
     };
-    let err_fn = |err| eprintln!("stream error: {}", err);
-
-    let input_stream = input_device
-        .build_input_stream(input_device_config, input_data_fn, err_fn, None)
-        .expect("building input stream failed");
 
     input_stream.play().expect("failed to play input stream");
 
-    let frames_needed = ((20.0 / 1000.0) * input_device_config.sample_rate as f32) as usize;
+    let frames_needed = ((20.0 / 1000.0) * input_device_config.sample_rate() as f32) as usize;
     let mut frame_buffer = vec![0.0; frames_needed];
 
     let channels: ropus::Channels = {
-        if input_device_config.channels == 2 {
+        if input_device_config.channels() == 2 {
             ropus::Channels::Stereo
         } else {
             ropus::Channels::Mono
@@ -212,7 +245,7 @@ pub async fn audio_stream_spawner(
     };
 
     let mut opus_encoder = Encoder::builder(
-        input_device_config.sample_rate,
+        input_device_config.sample_rate(),
         channels,
         ropus::Application::Voip,
     )
@@ -228,7 +261,7 @@ pub async fn audio_stream_spawner(
             let mut payload = Vec::with_capacity(4 + 1 + frames_needed * 4);
 
             let (server_address, client_id) = {
-                let info = clinet_info.read().unwrap();
+                let info = client_info.read().unwrap();
                 (info.server_address.clone(), info.client_id)
             };
 
