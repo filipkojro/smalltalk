@@ -62,6 +62,21 @@ pub async fn audio_stream_receiver(
     udp_socket: Arc<UdpSocket>,
 ) {
     let output_stream = match output_device_config.sample_format() {
+        SampleFormat::F64 => cpal_build_output_stream::<f64>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
+        SampleFormat::I64 => cpal_build_output_stream::<i64>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
+        SampleFormat::U64 => cpal_build_output_stream::<u64>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
         SampleFormat::F32 => cpal_build_output_stream::<f32>(
             &output_device,
             output_device_config.into(),
@@ -72,12 +87,27 @@ pub async fn audio_stream_receiver(
             output_device_config.into(),
             active_input_audio_streams_consumers,
         ),
+        SampleFormat::U32 => cpal_build_output_stream::<u32>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
         SampleFormat::I16 => cpal_build_output_stream::<i16>(
             &output_device,
             output_device_config.into(),
             active_input_audio_streams_consumers,
         ),
         SampleFormat::U16 => cpal_build_output_stream::<u16>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
+        SampleFormat::I8 => cpal_build_output_stream::<i8>(
+            &output_device,
+            output_device_config.into(),
+            active_input_audio_streams_consumers,
+        ),
+        SampleFormat::U8 => cpal_build_output_stream::<u8>(
             &output_device,
             output_device_config.into(),
             active_input_audio_streams_consumers,
@@ -250,17 +280,35 @@ pub async fn audio_stream_spawner(
     let (producer, mut consumer) = ring_buffer.split();
 
     let input_stream = match input_device_config.sample_format() {
+        SampleFormat::F64 => {
+            cpal_build_input_stream::<f64>(&input_device, input_device_config.into(), producer)
+        }
+        SampleFormat::I64 => {
+            cpal_build_input_stream::<i64>(&input_device, input_device_config.into(), producer)
+        }
+        SampleFormat::U64 => {
+            cpal_build_input_stream::<u64>(&input_device, input_device_config.into(), producer)
+        }
         SampleFormat::F32 => {
             cpal_build_input_stream::<f32>(&input_device, input_device_config.into(), producer)
         }
         SampleFormat::I32 => {
             cpal_build_input_stream::<i32>(&input_device, input_device_config.into(), producer)
         }
+        SampleFormat::U32 => {
+            cpal_build_input_stream::<u32>(&input_device, input_device_config.into(), producer)
+        }
         SampleFormat::I16 => {
             cpal_build_input_stream::<i16>(&input_device, input_device_config.into(), producer)
         }
         SampleFormat::U16 => {
             cpal_build_input_stream::<u16>(&input_device, input_device_config.into(), producer)
+        }
+        SampleFormat::I8 => {
+            cpal_build_input_stream::<i8>(&input_device, input_device_config.into(), producer)
+        }
+        SampleFormat::U8 => {
+            cpal_build_input_stream::<u8>(&input_device, input_device_config.into(), producer)
         }
         _ => {
             eprintln!("unsupported input stream format :(");
