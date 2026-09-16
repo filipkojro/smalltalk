@@ -122,7 +122,7 @@ pub async fn audio_stream_receiver(
 
     let mut receive_buffer = vec![0u8; 4096];
 
-    let mut decoded_samples = [0.0f32; 1024];
+    let mut decoded_samples = [0.0f32; 2048];
     let mut decoded_samples_converted = [0.0f32; 2048];
 
     loop {
@@ -240,6 +240,7 @@ pub async fn audio_stream_spawner(
     mut global_event_rx: Receiver<ClientEvent>,
     udp_socket: Arc<UdpSocket>,
     client_info: Arc<RwLock<ClientInfo>>,
+    force_channels: u16,
 ) {
     let current_stream_id: u8 = rand::random();
 
@@ -252,7 +253,7 @@ pub async fn audio_stream_spawner(
             let _ = global_event_tx.send(ClientEvent::NewAudioStreamRequest(AudioStreamInfo {
                 client_id: client_id,
                 stream_id: current_stream_id,
-                channels: input_device_config.channels(),
+                channels: force_channels,
                 sample_rate: input_device_config.sample_rate(),
             }));
             break;
@@ -274,8 +275,7 @@ pub async fn audio_stream_spawner(
 
     let ring_buffer_ms = 80.0;
     let ring_buffer_frames = (ring_buffer_ms / 1000.0) * input_device_config.sample_rate() as f32;
-    let ring_buffer_samples = ring_buffer_frames as usize * input_device_config.channels() as usize;
-    let ring_buffer_size = ring_buffer_samples;
+    let ring_buffer_size = ring_buffer_frames as usize * input_device_config.channels() as usize;
     let ring_buffer = HeapRb::<f32>::new(ring_buffer_size);
     let (producer, mut consumer) = ring_buffer.split();
 
@@ -318,32 +318,63 @@ pub async fn audio_stream_spawner(
 
     input_stream.play().expect("failed to play input stream");
 
-    let frames_needed = ((20.0 / 1000.0) * input_device_config.sample_rate() as f32) as usize;
-    let mut frame_buffer = vec![0.0; frames_needed];
+    let samples_needed = ((20.0 / 1000.0)
+        * input_device_config.sample_rate() as f32
+        * input_device_config.channels() as f32) as usize;
 
-    let channels: ropus::Channels = {
-        if input_device_config.channels() == 2 {
-            ropus::Channels::Stereo
-        } else {
-            ropus::Channels::Mono
+    let output_samples_needed = ((20.0 / 1000.0)
+        * input_device_config.sample_rate() as f32
+        * force_channels as f32) as usize;
+
+    let mut frame_buffer = vec![0f32; samples_needed];
+    let mut output_frame_buffer = vec![0f32; output_samples_needed];
+
+    let encoder_channels: ropus::Channels = match force_channels {
+        1 => ropus::Channels::Mono,
+        2 => ropus::Channels::Stereo,
+        _ => {
+            eprintln!("unsupported by encoder channel count");
+            return;
         }
     };
 
     let mut opus_encoder = Encoder::builder(
         input_device_config.sample_rate(),
-        channels,
+        encoder_channels,
         ropus::Application::Voip,
     )
     .build()
     .unwrap();
 
-    let mut encoded_frame_buffer = [0u8; 1024];
+    let mut encoded_frame_buffer = [0u8; 2048];
 
     loop {
-        if consumer.occupied_len() >= frames_needed {
+        if consumer.occupied_len() >= samples_needed {
             consumer.pop_slice(&mut frame_buffer);
 
-            let mut payload = Vec::with_capacity(4 + 1 + frames_needed * 4);
+            if force_channels == input_device_config.channels() {
+                output_frame_buffer.copy_from_slice(frame_buffer.as_slice());
+            } else if force_channels < input_device_config.channels() {
+                let div = (input_device_config.channels() / force_channels) as usize;
+
+                output_frame_buffer.fill(0.0);
+
+                for (i, input_sample) in frame_buffer.iter().enumerate() {
+                    output_frame_buffer[i / div] += *input_sample / div as f32;
+                }
+            } else {
+                let div = (force_channels / input_device_config.channels()) as usize;
+
+                for (i, output_sample) in output_frame_buffer.iter_mut().enumerate() {
+                    *output_sample = frame_buffer[i / div];
+                }
+            }
+
+            let encoded_len = opus_encoder
+                .encode_float(&output_frame_buffer.as_slice(), &mut encoded_frame_buffer)
+                .expect("failed to encode frame");
+
+            let mut payload = Vec::<u8>::with_capacity(4 + 1 + encoded_len * 4);
 
             let (server_address, client_id) = {
                 let info = client_info.read().unwrap();
@@ -352,10 +383,6 @@ pub async fn audio_stream_spawner(
 
             payload.extend(client_id.to_be_bytes());
             payload.extend(current_stream_id.to_be_bytes());
-
-            let encoded_len = opus_encoder
-                .encode_float(&frame_buffer.as_slice(), &mut encoded_frame_buffer)
-                .expect("failed to encode frame");
 
             payload.extend_from_slice(&encoded_frame_buffer[..encoded_len]);
 

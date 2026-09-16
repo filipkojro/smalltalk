@@ -101,6 +101,7 @@ async fn main() {
             global_event_tx.subscribe(),
             udp_socket.clone(),
             client_info.clone(),
+            1,
         ));
 
         tokio::signal::ctrl_c().await.expect("failed to close");

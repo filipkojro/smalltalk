@@ -1,5 +1,5 @@
 use cpal::{
-    Device, SAMPLE_RATE_48K, SampleFormat, SupportedStreamConfig,
+    Device, SAMPLE_RATE_48K, SupportedStreamConfig,
     traits::{DeviceTrait, HostTrait},
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
@@ -264,7 +264,7 @@ impl DeviceSelectScreen {
         for (device, config) in self.input_devices.iter() {
             input_device_rows.push(Row::new(vec![
                 device.description().unwrap().name().to_string(),
-                config.sample_format().to_string(),
+                config.channels().to_string(),
             ]));
         }
         let input_device_table = Table::new(input_device_rows, widths)
@@ -299,7 +299,7 @@ impl DeviceSelectScreen {
         for (device, config) in self.output_devices.iter() {
             output_device_rows.push(Row::new(vec![
                 device.description().unwrap().name().to_string(),
-                config.sample_format().to_string(),
+                config.channels().to_string(),
             ]));
         }
         let output_device_table = Table::new(output_device_rows, widths)
@@ -413,6 +413,7 @@ impl DeviceSelectScreen {
                 self.global_event_tx.subscribe(),
                 self.audio_control.udp_socket.clone(),
                 self.client_info.clone(),
+                1,
             ));
 
             self.exit_screen = TuiScreen::Blank;
