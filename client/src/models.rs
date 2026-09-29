@@ -25,6 +25,7 @@ pub enum TuiScreen {
     Exit,
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub enum ClientEvent {
     NewConnection,

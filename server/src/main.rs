@@ -23,6 +23,7 @@ struct Client {
     audio_streams: Option<Vec<AudioStreamInfo>>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 enum ServerEvent {
     NewAudioStream(AudioStreamInfo),
