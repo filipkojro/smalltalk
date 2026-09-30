@@ -8,8 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: apt-get update -y && apt-get upgrade -y && apt-get install -y g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+      - uses: ./.gitea/actions/setup-env
       - run: cargo check
 
   test:
@@ -17,8 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: apt-get update -y && apt-get upgrade -y && apt-get install -y g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+      - uses: ./.gitea/actions/setup-env
       - run: cargo test
 
   fmt:
@@ -26,8 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: apt-get update -y && apt-get upgrade -y && apt-get install -y g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+      - uses: ./.gitea/actions/setup-env
       - run: rustup component add rustfmt
       - run: cargo fmt --all -- --check
 
@@ -36,8 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: apt-get update -y && apt-get upgrade -y && apt-get install -y g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+      - uses: ./.gitea/actions/setup-env
       - run: rustup component add clippy
       - run: cargo clippy -- -D warnings
 
@@ -46,6 +42,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: apt-get update -y && apt-get upgrade -y && apt-get install -y g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+      - uses: ./.gitea/actions/setup-env
       - run: cargo build
