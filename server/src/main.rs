@@ -26,8 +26,6 @@ struct Client {
 #[allow(dead_code)]
 #[derive(Clone)]
 enum ServerEvent {
-    NewAudioStream(AudioStreamInfo),
-    SendAllStreams,
     SendAllOtherStreams(u32),
     UserConnected(u32),
     UserDisconnected(u32),
@@ -71,7 +69,7 @@ async fn main() {
         let mut buf = vec![0u8; 4096];
 
         loop {
-            let (len, src_adddress) = udp_socket.recv_from(&mut buf).await.expect("receive error");
+            let (len, src_address) = udp_socket.recv_from(&mut buf).await.expect("receive error");
 
             if len < 4 {
                 continue;
@@ -82,13 +80,13 @@ async fn main() {
 
             let mut clients = udp_state.write().await;
             if let Some(client) = clients.get_mut(&client_id) {
-                client.udp_addr = Some(src_adddress);
+                client.udp_addr = Some(src_address);
             }
 
             for (&other_client_id, other_client) in clients.iter() {
                 if other_client_id != client_id {
-                    if let Some(destication_udp) = other_client.udp_addr {
-                        let _ = udp_socket.send_to(&buf[..len], destication_udp).await;
+                    if let Some(destination_udp) = other_client.udp_addr {
+                        let _ = udp_socket.send_to(&buf[..len], destination_udp).await;
                     }
                 }
             }
@@ -229,21 +227,6 @@ async fn main() {
 
                                             let _ = framed_tcp_stream.send(Bytes::from(response_json)).await;
                                         }
-                                    }
-                                    ServerEvent::SendAllStreams => {
-                                        let clients = tcp_state.read().await;
-
-                                        let response_json = serde_json::to_string(&TcpResponse {
-                                            status: ResponseStatus::Ok,
-                                            data: shared::TcpResponseData::AudioStreamsFullUpdate {
-                                                audio_stream_info: scrape_all_client_streams_info(&clients),
-                                            },
-                                        }).expect("failed to serialize ServerEvent::SendAllStreams");
-
-                                        let _ = framed_tcp_stream.send(Bytes::from(response_json)).await;
-                                    }
-                                    _ => {
-                                        println!("unhandled event");
                                     }
                                 }
                             }

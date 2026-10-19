@@ -1,5 +1,7 @@
+use audioadapter_buffers::direct::InterleavedSlice;
 use cpal::{
-    Device, FromSample, Sample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig,
+    Device, FromSample, SAMPLE_RATE_48K, Sample, SampleFormat, SizedSample, StreamConfig,
+    SupportedStreamConfig,
     traits::{DeviceTrait, StreamTrait},
 };
 use ringbuf::{
@@ -9,6 +11,7 @@ use ringbuf::{
     wrap::caching::Caching,
 };
 use ropus::Encoder;
+use rubato::{Async, FixedAsync, PolynomialDegree, Resampler, audioadapter::Adapter};
 use shared::AudioStreamInfo;
 use std::sync::{Arc, RwLock};
 use tokio::{
@@ -318,16 +321,26 @@ pub async fn audio_stream_spawner(
 
     input_stream.play().expect("failed to play input stream");
 
-    let samples_needed = ((20.0 / 1000.0)
-        * input_device_config.sample_rate() as f32
-        * input_device_config.channels() as f32) as usize;
+    let frames_needed = ((20.0 / 1000.0) * input_device_config.sample_rate() as f32) as usize;
 
-    let output_samples_needed = ((20.0 / 1000.0)
-        * input_device_config.sample_rate() as f32
-        * force_channels as f32) as usize;
+    let samples_needed = frames_needed * input_device_config.channels() as usize;
 
     let mut frame_buffer = vec![0f32; samples_needed];
-    let mut output_frame_buffer = vec![0f32; output_samples_needed];
+
+    let mut resampler_input_buffer = vec![0.0f32; frames_needed * force_channels as usize];
+
+    let mut resampler = Async::<f32>::new_poly(
+        48000.0 / 44100.0,
+        1.1,
+        PolynomialDegree::Cubic,
+        frames_needed,
+        force_channels as usize,
+        FixedAsync::Output,
+    )
+    .unwrap();
+
+    let mut resampler_output_buffer =
+        vec![0.0f32; resampler.output_frames_max() * force_channels as usize];
 
     let encoder_channels: ropus::Channels = match force_channels {
         1 => ropus::Channels::Mono,
@@ -338,13 +351,10 @@ pub async fn audio_stream_spawner(
         }
     };
 
-    let mut opus_encoder = Encoder::builder(
-        input_device_config.sample_rate(),
-        encoder_channels,
-        ropus::Application::Voip,
-    )
-    .build()
-    .unwrap();
+    let mut opus_encoder =
+        Encoder::builder(SAMPLE_RATE_48K, encoder_channels, ropus::Application::Voip)
+            .build()
+            .unwrap();
 
     let mut encoded_frame_buffer = [0u8; 2048];
 
@@ -352,26 +362,40 @@ pub async fn audio_stream_spawner(
         if consumer.occupied_len() >= samples_needed {
             consumer.pop_slice(&mut frame_buffer);
 
-            if force_channels == input_device_config.channels() {
-                output_frame_buffer.copy_from_slice(frame_buffer.as_slice());
-            } else if force_channels < input_device_config.channels() {
-                let div = (input_device_config.channels() / force_channels) as usize;
+            let frame_buffer_adapter = InterleavedSlice::new(
+                &frame_buffer,
+                input_device_config.channels() as usize,
+                frames_needed,
+            )
+            .unwrap();
 
-                output_frame_buffer.fill(0.0);
+            frame_buffer_adapter.copy_from_channel_to_slice(0, 0, &mut resampler_input_buffer); // im only using first channel for now
 
-                for (i, input_sample) in frame_buffer.iter().enumerate() {
-                    output_frame_buffer[i / div] += *input_sample / div as f32;
-                }
-            } else {
-                let div = (force_channels / input_device_config.channels()) as usize;
+            let resampler_input = InterleavedSlice::new(
+                &resampler_input_buffer,
+                force_channels as usize,
+                frames_needed,
+            )
+            .unwrap();
 
-                for (i, output_sample) in output_frame_buffer.iter_mut().enumerate() {
-                    *output_sample = frame_buffer[i / div];
-                }
-            }
+            let mut resampler_output = InterleavedSlice::new_mut(
+                &mut resampler_output_buffer,
+                force_channels as usize,
+                resampler.output_frames_max(),
+            )
+            .unwrap();
+
+            let (_frames_read, frames_written) = resampler
+                .process_into_buffer(&resampler_input, &mut resampler_output, None)
+                .unwrap();
+
+            let valid_samples = frames_written * force_channels as usize;
 
             let encoded_len = opus_encoder
-                .encode_float(&output_frame_buffer.as_slice(), &mut encoded_frame_buffer)
+                .encode_float(
+                    &resampler_output_buffer[..valid_samples],
+                    &mut encoded_frame_buffer,
+                )
                 .expect("failed to encode frame");
 
             let mut payload = Vec::<u8>::with_capacity(4 + 1 + encoded_len * 4);

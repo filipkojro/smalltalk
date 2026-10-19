@@ -123,46 +123,14 @@ impl DeviceSelectScreen {
 
         if let Some(default_input_device) = host.default_input_device() {
             if let Ok(default_config) = default_input_device.default_input_config() {
-                if default_config.sample_rate() == SAMPLE_RATE_48K
-                    && (default_config.channels() == 1)
-                {
-                    input_devices.push((default_input_device.clone(), default_config));
-                }
-            } else if let Ok(supported_configs) = default_input_device.supported_input_configs() {
-                for supported_config in supported_configs {
-                    if let Some(input_config) =
-                        supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
-                    {
-                        if input_config.channels() == 1 {
-                            input_devices.push((default_input_device, input_config));
-                            break;
-                        }
-                    }
-                }
+                input_devices.push((default_input_device.clone(), default_config));
             }
         }
 
         if let Ok(possible_input_devices) = host.input_devices() {
             for possible_input_device in possible_input_devices {
                 if let Ok(default_config) = possible_input_device.default_input_config() {
-                    if default_config.sample_rate() == SAMPLE_RATE_48K
-                        && (default_config.channels() == 1)
-                    {
-                        input_devices.push((possible_input_device.clone(), default_config));
-                        continue;
-                    }
-                }
-                if let Ok(supported_configs) = possible_input_device.supported_input_configs() {
-                    for supported_config in supported_configs {
-                        if let Some(input_config) =
-                            supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
-                        {
-                            if input_config.channels() == 1 {
-                                input_devices.push((possible_input_device, input_config));
-                                break;
-                            }
-                        }
-                    }
+                    input_devices.push((possible_input_device.clone(), default_config));
                 }
             }
         }
@@ -171,47 +139,14 @@ impl DeviceSelectScreen {
 
         if let Some(default_output_device) = host.default_output_device() {
             if let Ok(default_config) = default_output_device.default_output_config() {
-                if default_config.sample_rate() == SAMPLE_RATE_48K
-                    && (default_config.channels() == 1 || default_config.channels() == 2)
-                {
-                    output_devices.push((default_output_device.clone(), default_config.into()));
-                }
-            } else if let Ok(supported_configs) = default_output_device.supported_output_configs() {
-                for supported_config in supported_configs {
-                    if let Some(output_config) =
-                        supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
-                    {
-                        if output_config.channels() == 1 || output_config.channels() == 2 {
-                            output_devices.push((default_output_device, output_config.into()));
-                            break;
-                        }
-                    }
-                }
+                output_devices.push((default_output_device.clone(), default_config.into()));
             }
         }
 
         if let Ok(possible_output_devices) = host.output_devices() {
             for possible_output_device in possible_output_devices {
                 if let Ok(default_config) = possible_output_device.default_output_config() {
-                    if default_config.sample_rate() == SAMPLE_RATE_48K
-                        && (default_config.channels() == 1 || default_config.channels() == 2)
-                    {
-                        output_devices
-                            .push((possible_output_device.clone(), default_config.into()));
-                        continue;
-                    }
-                }
-                if let Ok(supported_configs) = possible_output_device.supported_output_configs() {
-                    for supported_config in supported_configs {
-                        if let Some(output_config) =
-                            supported_config.try_with_sample_rate(SAMPLE_RATE_48K)
-                        {
-                            if output_config.channels() == 1 || output_config.channels() == 2 {
-                                output_devices.push((possible_output_device, output_config.into()));
-                                break;
-                            }
-                        }
-                    }
+                    output_devices.push((possible_output_device.clone(), default_config.into()));
                 }
             }
         }
@@ -261,11 +196,18 @@ impl DeviceSelectScreen {
         let widths = [Constraint::Percentage(100), Constraint::Min(8)];
 
         let mut input_device_rows: Vec<Row> = Vec::new();
-        for (device, config) in self.input_devices.iter() {
-            input_device_rows.push(Row::new(vec![
-                device.description().unwrap().name().to_string(),
-                config.channels().to_string(),
-            ]));
+        for (i, (device, config)) in self.input_devices.iter().enumerate() {
+            if i == 0 {
+                input_device_rows.push(Row::new(vec![
+                    format!("(default) {}", device.description().unwrap().name()),
+                    config.channels().to_string(),
+                ]));
+            } else {
+                input_device_rows.push(Row::new(vec![
+                    device.description().unwrap().name().to_string(),
+                    config.channels().to_string(),
+                ]));
+            }
         }
         let input_device_table = Table::new(input_device_rows, widths)
             .header(
@@ -296,11 +238,21 @@ impl DeviceSelectScreen {
         frame.render_stateful_widget(input_device_table, left_block, &mut self.input_device_state);
 
         let mut output_device_rows: Vec<Row> = Vec::new();
-        for (device, config) in self.output_devices.iter() {
-            output_device_rows.push(Row::new(vec![
-                device.description().unwrap().name().to_string(),
-                config.channels().to_string(),
-            ]));
+        for (i, (device, config)) in self.output_devices.iter().enumerate() {
+            if i == 0 {
+                output_device_rows.push(Row::new(vec![
+                    format!(
+                        "(default) {}",
+                        device.description().unwrap().name().to_string()
+                    ),
+                    config.channels().to_string(),
+                ]));
+            } else {
+                output_device_rows.push(Row::new(vec![
+                    device.description().unwrap().name().to_string(),
+                    config.channels().to_string(),
+                ]));
+            }
         }
         let output_device_table = Table::new(output_device_rows, widths)
             .header(
