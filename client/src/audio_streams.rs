@@ -257,7 +257,7 @@ pub async fn audio_stream_spawner(
                 client_id: client_id,
                 stream_id: current_stream_id,
                 channels: force_channels,
-                sample_rate: input_device_config.sample_rate(),
+                sample_rate: SAMPLE_RATE_48K,
             }));
             break;
         }

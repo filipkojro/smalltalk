@@ -1,5 +1,5 @@
 use cpal::{
-    Device, SAMPLE_RATE_48K, SupportedStreamConfig,
+    Device, SupportedStreamConfig,
     traits::{DeviceTrait, HostTrait},
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
