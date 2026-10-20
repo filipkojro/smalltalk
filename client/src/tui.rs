@@ -345,15 +345,6 @@ impl DeviceSelectScreen {
             tokio::spawn(audio_stream_receiver(
                 output_device.clone(),
                 output_config.clone(),
-                self.audio_control
-                    .active_input_audio_streams_producers
-                    .clone(),
-                self.audio_control
-                    .active_input_audio_streams_consumers
-                    .clone(),
-                self.audio_control
-                    .active_input_audio_streams_encoders
-                    .clone(),
                 self.audio_control.active_input_audio_streams_info.clone(),
                 self.audio_control.udp_socket.clone(),
             ));

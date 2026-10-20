@@ -7,17 +7,14 @@ use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, RwLock},
 };
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 
 use crate::{
     audio_streams::{audio_stream_receiver, audio_stream_spawner},
-    models::{
-        AudioControl, CliArgs, ClientEvent, ClientInfo, InputAudioStreamsConsumers,
-        InputAudioStreamsEncoders, InputAudioStreamsInfo, InputAudioStreamsProducers,
-    },
+    models::{AudioControl, CliArgs, ClientEvent, ClientInfo, InputAudioStreamsInfo},
     tcp_connection::tcp_connection,
     tui::Tui,
 };
@@ -28,23 +25,12 @@ async fn main() {
 
     let (global_event_tx, _) = broadcast::channel::<ClientEvent>(16);
 
-    let active_input_audio_streams_producers: InputAudioStreamsProducers =
-        Arc::new(Mutex::new(HashMap::new()));
-    let active_input_audio_streams_consumers: InputAudioStreamsConsumers =
-        Arc::new(Mutex::new(HashMap::new()));
-
-    let active_input_audio_streams_encoders: InputAudioStreamsEncoders =
-        Arc::new(RwLock::new(HashMap::new()));
-
     let active_input_audio_streams_info: InputAudioStreamsInfo =
         Arc::new(RwLock::new(HashMap::new()));
 
     let udp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
 
     let audio_control: Arc<AudioControl> = Arc::new(AudioControl {
-        active_input_audio_streams_producers: active_input_audio_streams_producers.clone(),
-        active_input_audio_streams_consumers: active_input_audio_streams_consumers.clone(),
-        active_input_audio_streams_encoders: active_input_audio_streams_encoders.clone(),
         active_input_audio_streams_info: active_input_audio_streams_info.clone(),
         udp_socket: udp_socket.clone(),
     });
@@ -87,9 +73,6 @@ async fn main() {
         tokio::spawn(audio_stream_receiver(
             output_device,
             output_device_config.into(),
-            active_input_audio_streams_producers.clone(),
-            active_input_audio_streams_consumers.clone(),
-            active_input_audio_streams_encoders.clone(),
             active_input_audio_streams_info.clone(),
             udp_socket.clone(),
         ));

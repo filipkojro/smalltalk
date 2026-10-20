@@ -1,8 +1,6 @@
 use futures::{SinkExt, StreamExt};
-use ringbuf::{HeapRb, traits::Split};
-use ropus::Decoder;
 use shared::{ResponseStatus, TcpRequest, TcpResponse, TcpResponseData};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use tokio::{
     net::TcpStream,
     sync::broadcast::{Receiver, Sender},
@@ -57,49 +55,10 @@ pub async fn tcp_connection(
                                         println!("user disconnected: {}", user_id);
                                     }
                                     TcpResponseData::AudioStreamsFullUpdate { audio_stream_info } => {
-                                        let mut producer_map = audio_control.active_input_audio_streams_producers.lock().unwrap();
-                                        producer_map.clear();
-                                        let mut consumer_map = audio_control.active_input_audio_streams_consumers.lock().unwrap();
-                                        consumer_map.clear();
-
-                                        let mut encoder_map = audio_control.active_input_audio_streams_encoders.write().unwrap();
-                                        encoder_map.clear();
-
                                         let mut info_map = audio_control.active_input_audio_streams_info.write().unwrap();
                                         info_map.clear();
 
-
                                         for audio_stream in audio_stream_info {
-                                            let ring_buffer_ms = 150.0;
-                                            let ring_buffer_frames = (ring_buffer_ms / 1000.0) * audio_stream.sample_rate as f32;
-                                            let ring_buffer_samples = ring_buffer_frames as usize * audio_stream.channels as usize;
-                                            let ring_buffer_size = ring_buffer_samples;
-                                            let ring_buffer = HeapRb::<f32>::new(ring_buffer_size);
-                                            let (producer, consumer) = ring_buffer.split();
-
-                                            producer_map.insert(
-                                                (audio_stream.client_id, audio_stream.stream_id),
-                                                producer,
-                                            );
-                                            consumer_map.insert(
-                                                (audio_stream.client_id, audio_stream.stream_id),
-                                                consumer,
-                                            );
-
-                                            let channels: ropus::Channels = {
-                                                if audio_stream.channels == 1 {
-                                                    ropus::Channels::Mono
-                                                } else {
-                                                    ropus::Channels::Stereo
-                                                }
-                                            };
-
-                                            let decoder = Decoder::new(audio_stream.sample_rate, channels).expect("failed to creat decoder");
-                                            encoder_map.insert(
-                                                (audio_stream.client_id, audio_stream.stream_id),
-                                                Mutex::new(decoder),
-                                            );
-
                                             info_map.insert(
                                                 (audio_stream.client_id, audio_stream.stream_id),
                                                 audio_stream,

@@ -10,18 +10,21 @@ use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
     wrap::caching::Caching,
 };
-use ropus::Encoder;
-use rubato::{Async, FixedAsync, PolynomialDegree, Resampler, audioadapter::Adapter};
+use ropus::{Decoder, Encoder};
+use rubato::{Fft, FixedSync, Resampler, audioadapter::Adapter};
 use shared::AudioStreamInfo;
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, RwLock},
+};
 use tokio::{
     net::UdpSocket,
     sync::broadcast::{Receiver, Sender},
 };
 
 use crate::models::{
-    ClientEvent, ClientInfo, InputAudioStreamsConsumers, InputAudioStreamsEncoders,
-    InputAudioStreamsInfo, InputAudioStreamsProducers,
+    ClientEvent, ClientInfo, InputAudioStreamsConsumers, InputAudioStreamsDecoders,
+    InputAudioStreamsInfo, InputAudioStreamsProducers, InputAudioStreamsResamplers,
 };
 
 fn cpal_build_output_stream<T>(
@@ -58,62 +61,65 @@ where
 pub async fn audio_stream_receiver(
     output_device: Device,
     output_device_config: SupportedStreamConfig,
-    active_input_audio_streams_producers: InputAudioStreamsProducers,
-    active_input_audio_streams_consumers: InputAudioStreamsConsumers,
-    active_input_audio_streams_encoders: InputAudioStreamsEncoders,
     active_input_audio_streams_info: InputAudioStreamsInfo,
     udp_socket: Arc<UdpSocket>,
 ) {
+    let mut active_input_audio_streams_producers: InputAudioStreamsProducers = HashMap::new();
+    let active_input_audio_streams_consumers: InputAudioStreamsConsumers =
+        Arc::new(Mutex::new(HashMap::new()));
+    let mut active_input_audio_streams_decoders: InputAudioStreamsDecoders = HashMap::new();
+    let mut active_input_audio_streams_resamplers: InputAudioStreamsResamplers = HashMap::new();
+
     let output_stream = match output_device_config.sample_format() {
         SampleFormat::F64 => cpal_build_output_stream::<f64>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         SampleFormat::I64 => cpal_build_output_stream::<i64>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         SampleFormat::U64 => cpal_build_output_stream::<u64>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         SampleFormat::F32 => cpal_build_output_stream::<f32>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         SampleFormat::I32 => cpal_build_output_stream::<i32>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         SampleFormat::U32 => cpal_build_output_stream::<u32>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         SampleFormat::I16 => cpal_build_output_stream::<i16>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         SampleFormat::U16 => cpal_build_output_stream::<u16>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         SampleFormat::I8 => cpal_build_output_stream::<i8>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         SampleFormat::U8 => cpal_build_output_stream::<u8>(
             &output_device,
             output_device_config.into(),
-            active_input_audio_streams_consumers,
+            active_input_audio_streams_consumers.clone(),
         ),
         _ => {
             eprintln!("unsupported output stream format :(");
@@ -125,8 +131,15 @@ pub async fn audio_stream_receiver(
 
     let mut receive_buffer = vec![0u8; 4096];
 
-    let mut decoded_samples = [0.0f32; 2048];
-    let mut decoded_samples_converted = [0.0f32; 2048];
+    let max_input_raw_samples = ((20.0 / 1000.0) * 2.0 * SAMPLE_RATE_48K as f32) as usize; // 20ms, 2channels, 48khz
+    let mut decoded_samples = vec![0.0f32; max_input_raw_samples];
+
+    let mut resampled_samples = vec![0.0f32; max_input_raw_samples];
+
+    let output_raw_samples = ((20.0 / 1000.0)
+        * output_device_config.channels() as f32
+        * output_device_config.sample_rate() as f32) as usize;
+    let mut decoded_samples_converted = vec![0.0f32; output_raw_samples];
 
     loop {
         match udp_socket.recv_from(&mut receive_buffer).await {
@@ -155,15 +168,56 @@ pub async fn audio_stream_receiver(
                     }
                 };
 
-                let decoders_map = active_input_audio_streams_encoders.read().unwrap();
+                let input_frames = ((20.0 / 1000.0) * stream_info.sample_rate as f32) as usize;
+                let resampler_output_frames =
+                    ((20.0 / 1000.0) * output_device_config.sample_rate() as f32) as usize;
 
-                let decoder_mutex = decoders_map
-                    .get(&(client_id, stream_id))
-                    .expect("failed to get encoder mutex");
+                if !active_input_audio_streams_decoders.contains_key(&(client_id, stream_id)) {
+                    let channels: ropus::Channels = {
+                        if stream_info.channels == 2 {
+                            ropus::Channels::Stereo
+                        } else {
+                            ropus::Channels::Mono
+                        }
+                    };
 
-                let mut decoder = decoder_mutex.lock().expect("failed to get encoder");
+                    let decoder = Decoder::new(stream_info.sample_rate, channels)
+                        .expect("failed to create decoder");
+                    active_input_audio_streams_decoders
+                        .insert((stream_info.client_id, stream_info.stream_id), decoder);
+                }
 
-                let decoded_len = decoder
+                if !active_input_audio_streams_resamplers.contains_key(&(client_id, stream_id)) {
+                    let resampler = Fft::<f32>::new(
+                        stream_info.sample_rate as usize,
+                        output_device_config.sample_rate() as usize,
+                        input_frames,
+                        stream_info.channels as usize,
+                        FixedSync::Both,
+                    )
+                    .unwrap();
+                    active_input_audio_streams_resamplers.insert((client_id, stream_id), resampler);
+                }
+
+                if !active_input_audio_streams_producers.contains_key(&(client_id, stream_id)) {
+                    let ring_buffer_frames = (100.0 / 1000.0) * stream_info.sample_rate as f32;
+                    let ring_buffer_samples =
+                        ring_buffer_frames as usize * stream_info.channels as usize;
+                    let ring_buffer = HeapRb::<f32>::new(ring_buffer_samples);
+                    let (producer, consumer) = ring_buffer.split();
+
+                    active_input_audio_streams_producers.insert((client_id, stream_id), producer);
+                    active_input_audio_streams_consumers
+                        .lock()
+                        .unwrap()
+                        .insert((client_id, stream_id), consumer);
+                }
+
+                let decoder = active_input_audio_streams_decoders
+                    .get_mut(&(client_id, stream_id))
+                    .expect("failed to get decoder");
+
+                let _ = decoder
                     .decode_float(
                         audio_packet,
                         &mut decoded_samples,
@@ -171,41 +225,50 @@ pub async fn audio_stream_receiver(
                     )
                     .expect("failed to decode opus");
 
-                let mut active_streams_map = active_input_audio_streams_producers.lock().unwrap();
+                let decoded_samples_adapter = InterleavedSlice::new(
+                    &decoded_samples,
+                    stream_info.channels as usize,
+                    input_frames,
+                )
+                .unwrap();
 
-                if let Some(producer) = active_streams_map.get_mut(&(client_id, stream_id)) {
-                    if stream_info.channels == output_device_config.channels() {
-                        producer.push_slice(
-                            &decoded_samples[..decoded_len * stream_info.channels as usize],
-                        );
-                    } else if stream_info.channels > output_device_config.channels() {
-                        for (i, frame) in decoded_samples
-                            [..decoded_len * stream_info.channels as usize]
-                            .chunks_exact(2)
-                            .enumerate()
-                        {
-                            decoded_samples_converted[i] = (frame[0] + frame[1]) / 2.0;
+                let mut resampled_samples_adapter = InterleavedSlice::new_mut(
+                    &mut resampled_samples,
+                    stream_info.channels as usize,
+                    resampler_output_frames,
+                )
+                .unwrap();
+
+                let (_, frames_out) = active_input_audio_streams_resamplers
+                    .get_mut(&(client_id, stream_id))
+                    .expect("failed to get resampler")
+                    .process_into_buffer(
+                        &decoded_samples_adapter,
+                        &mut resampled_samples_adapter,
+                        None,
+                    )
+                    .expect("error during resampling");
+
+                if let Some(producer) =
+                    active_input_audio_streams_producers.get_mut(&(client_id, stream_id))
+                {
+                    for (&resampled_sample, output_frame) in resampled_samples
+                        .iter()
+                        .step_by(stream_info.channels as usize)
+                        .zip(
+                            decoded_samples_converted
+                                .chunks_exact_mut(output_device_config.channels() as usize),
+                        )
+                    {
+                        for output_sample in output_frame.iter_mut() {
+                            *output_sample = resampled_sample;
                         }
-
-                        producer.push_slice(
-                            &decoded_samples_converted
-                                [..decoded_len * stream_info.channels as usize],
-                        );
-                    } else {
-                        for (i, frame) in decoded_samples_converted
-                            [..decoded_len * output_device_config.channels() as usize]
-                            .chunks_exact_mut(2)
-                            .enumerate()
-                        {
-                            frame[0] = decoded_samples[i];
-                            frame[1] = decoded_samples[i];
-                        }
-
-                        producer.push_slice(
-                            &decoded_samples_converted
-                                [..decoded_len * output_device_config.channels() as usize],
-                        );
                     }
+
+                    producer.push_slice(
+                        &decoded_samples_converted
+                            [..frames_out * output_device_config.channels() as usize],
+                    );
                 }
             }
             Err(e) => eprintln!("failed to receive udp packet: {}", e),
@@ -329,13 +392,12 @@ pub async fn audio_stream_spawner(
 
     let mut resampler_input_buffer = vec![0.0f32; frames_needed * force_channels as usize];
 
-    let mut resampler = Async::<f32>::new_poly(
-        48000.0 / 44100.0,
-        1.1,
-        PolynomialDegree::Cubic,
+    let mut resampler = Fft::<f32>::new(
+        input_device_config.sample_rate() as usize,
+        SAMPLE_RATE_48K as usize,
         frames_needed,
         force_channels as usize,
-        FixedAsync::Output,
+        FixedSync::Both,
     )
     .unwrap();
 
