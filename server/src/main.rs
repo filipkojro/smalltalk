@@ -85,9 +85,10 @@ async fn main() {
 
             for (&other_client_id, other_client) in clients.iter() {
                 if other_client_id != client_id
-                    && let Some(destination_udp) = other_client.udp_addr {
-                        let _ = udp_socket.send_to(&buf[..len], destination_udp).await;
-                    }
+                    && let Some(destination_udp) = other_client.udp_addr
+                {
+                    let _ = udp_socket.send_to(&buf[..len], destination_udp).await;
+                }
             }
         }
     });

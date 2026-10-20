@@ -85,7 +85,9 @@ impl BlankScreen {
     fn handle_events(&mut self) {
         match event::read().expect("failed to read event") {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                if let KeyCode::Char('q') = key_event.code { self.exit = true }
+                if let KeyCode::Char('q') = key_event.code {
+                    self.exit = true
+                }
             }
             _ => {}
         }
@@ -119,9 +121,10 @@ impl DeviceSelectScreen {
         let mut input_devices: Vec<(Device, SupportedStreamConfig)> = Vec::new();
 
         if let Some(default_input_device) = host.default_input_device()
-            && let Ok(default_config) = default_input_device.default_input_config() {
-                input_devices.push((default_input_device.clone(), default_config));
-            }
+            && let Ok(default_config) = default_input_device.default_input_config()
+        {
+            input_devices.push((default_input_device.clone(), default_config));
+        }
 
         if let Ok(possible_input_devices) = host.input_devices() {
             for possible_input_device in possible_input_devices {
@@ -134,9 +137,10 @@ impl DeviceSelectScreen {
         let mut output_devices: Vec<(Device, SupportedStreamConfig)> = Vec::new();
 
         if let Some(default_output_device) = host.default_output_device()
-            && let Ok(default_config) = default_output_device.default_output_config() {
-                output_devices.push((default_output_device.clone(), default_config));
-            }
+            && let Ok(default_config) = default_output_device.default_output_config()
+        {
+            output_devices.push((default_output_device.clone(), default_config));
+        }
 
         if let Ok(possible_output_devices) = host.output_devices() {
             for possible_output_device in possible_output_devices {
