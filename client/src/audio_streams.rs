@@ -41,11 +41,8 @@ where
         for sample in data {
             let mut mixed_value: f32 = 0.0;
 
-            for (_key, consumer) in streams.iter_mut() {
-                mixed_value += match consumer.try_pop() {
-                    Some(s) => s,
-                    None => 0.0,
-                }
+            for consumer in streams.values_mut() {
+                mixed_value += consumer.try_pop().unwrap_or(0.0)
             }
 
             *sample = mixed_value.to_sample::<T>();
@@ -53,9 +50,9 @@ where
     };
     let err_fn = |err| eprintln!("stream error: {}", err);
 
-    return output_device
+    output_device
         .build_output_stream(output_device_config, output_data_fn, err_fn, None)
-        .expect("building output stream failed");
+        .expect("building output stream failed")
 }
 
 pub async fn audio_stream_receiver(
@@ -187,26 +184,29 @@ pub async fn audio_stream_receiver(
                         .insert((stream_info.client_id, stream_info.stream_id), decoder);
                 }
 
-                if !active_input_audio_streams_resamplers.contains_key(&(client_id, stream_id)) {
-                    let resampler = Fft::<f32>::new(
-                        stream_info.sample_rate as usize,
-                        output_device_config.sample_rate() as usize,
-                        input_frames,
-                        stream_info.channels as usize,
-                        FixedSync::Both,
-                    )
-                    .unwrap();
-                    active_input_audio_streams_resamplers.insert((client_id, stream_id), resampler);
-                }
+                active_input_audio_streams_resamplers
+                    .entry((client_id, stream_id))
+                    .or_insert_with(|| {
+                        Fft::<f32>::new(
+                            stream_info.sample_rate as usize,
+                            output_device_config.sample_rate() as usize,
+                            input_frames,
+                            stream_info.channels as usize,
+                            FixedSync::Both,
+                        )
+                        .unwrap()
+                    });
 
-                if !active_input_audio_streams_producers.contains_key(&(client_id, stream_id)) {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    active_input_audio_streams_producers.entry((client_id, stream_id))
+                {
                     let ring_buffer_frames = (100.0 / 1000.0) * stream_info.sample_rate as f32;
                     let ring_buffer_samples =
                         ring_buffer_frames as usize * stream_info.channels as usize;
                     let ring_buffer = HeapRb::<f32>::new(ring_buffer_samples);
                     let (producer, consumer) = ring_buffer.split();
 
-                    active_input_audio_streams_producers.insert((client_id, stream_id), producer);
+                    e.insert(producer);
                     active_input_audio_streams_consumers
                         .lock()
                         .unwrap()
@@ -294,9 +294,9 @@ where
     };
     let err_fn = |err| eprintln!("stream error: {}", err);
 
-    return input_device
+    input_device
         .build_input_stream(input_device_config, input_data_fn, err_fn, None)
-        .expect("building input stream failed");
+        .expect("building input stream failed")
 }
 
 pub async fn audio_stream_spawner(
@@ -317,7 +317,7 @@ pub async fn audio_stream_spawner(
         };
         if connected {
             let _ = global_event_tx.send(ClientEvent::NewAudioStreamRequest(AudioStreamInfo {
-                client_id: client_id,
+                client_id,
                 stream_id: current_stream_id,
                 channels: force_channels,
                 sample_rate: SAMPLE_RATE_48K,

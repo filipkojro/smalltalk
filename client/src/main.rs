@@ -72,14 +72,14 @@ async fn main() {
 
         tokio::spawn(audio_stream_receiver(
             output_device,
-            output_device_config.into(),
+            output_device_config,
             active_input_audio_streams_info.clone(),
             udp_socket.clone(),
         ));
 
         tokio::spawn(audio_stream_spawner(
             input_device,
-            input_device_config.into(),
+            input_device_config,
             global_event_tx.clone(),
             global_event_tx.subscribe(),
             udp_socket.clone(),

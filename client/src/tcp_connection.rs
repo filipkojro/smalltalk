@@ -94,7 +94,7 @@ pub async fn tcp_connection(
                                 })
                                 .expect("failed to parse initial request");
 
-                                let _ = framed_tcp_stream.send(Bytes::from(request_json))
+                                framed_tcp_stream.send(Bytes::from(request_json))
                                 .await
                                 .expect("failed to send initial message");
 
@@ -110,7 +110,7 @@ pub async fn tcp_connection(
                                     }
                                 }).expect("failed to parse initial request");
 
-                                let _ = framed_tcp_stream.send(Bytes::from(request_json))
+                                framed_tcp_stream.send(Bytes::from(request_json))
                                 .await
                                 .expect("failed to send initial message");
                             }

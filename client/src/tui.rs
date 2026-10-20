@@ -75,7 +75,7 @@ impl BlankScreen {
             self.handle_events();
         }
 
-        return TuiScreen::Exit;
+        TuiScreen::Exit
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -85,10 +85,7 @@ impl BlankScreen {
     fn handle_events(&mut self) {
         match event::read().expect("failed to read event") {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                match key_event.code {
-                    KeyCode::Char('q') => self.exit = true,
-                    _ => {}
-                }
+                if let KeyCode::Char('q') = key_event.code { self.exit = true }
             }
             _ => {}
         }
@@ -121,11 +118,10 @@ impl DeviceSelectScreen {
 
         let mut input_devices: Vec<(Device, SupportedStreamConfig)> = Vec::new();
 
-        if let Some(default_input_device) = host.default_input_device() {
-            if let Ok(default_config) = default_input_device.default_input_config() {
+        if let Some(default_input_device) = host.default_input_device()
+            && let Ok(default_config) = default_input_device.default_input_config() {
                 input_devices.push((default_input_device.clone(), default_config));
             }
-        }
 
         if let Ok(possible_input_devices) = host.input_devices() {
             for possible_input_device in possible_input_devices {
@@ -137,16 +133,15 @@ impl DeviceSelectScreen {
 
         let mut output_devices: Vec<(Device, SupportedStreamConfig)> = Vec::new();
 
-        if let Some(default_output_device) = host.default_output_device() {
-            if let Ok(default_config) = default_output_device.default_output_config() {
-                output_devices.push((default_output_device.clone(), default_config.into()));
+        if let Some(default_output_device) = host.default_output_device()
+            && let Ok(default_config) = default_output_device.default_output_config() {
+                output_devices.push((default_output_device.clone(), default_config));
             }
-        }
 
         if let Ok(possible_output_devices) = host.output_devices() {
             for possible_output_device in possible_output_devices {
                 if let Ok(default_config) = possible_output_device.default_output_config() {
-                    output_devices.push((possible_output_device.clone(), default_config.into()));
+                    output_devices.push((possible_output_device.clone(), default_config));
                 }
             }
         }
@@ -162,13 +157,13 @@ impl DeviceSelectScreen {
             exit_screen: TuiScreen::Exit,
             input_device_state: input_state,
             output_device_state: output_state,
-            input_devices: input_devices,
-            output_devices: output_devices,
+            input_devices,
+            output_devices,
             selected_selection: 0,
 
-            audio_control: audio_control,
-            global_event_tx: global_event_tx,
-            client_info: client_info,
+            audio_control,
+            global_event_tx,
+            client_info,
         }
     }
 
@@ -180,7 +175,7 @@ impl DeviceSelectScreen {
             self.handle_events();
         }
 
-        return self.exit_screen;
+        self.exit_screen
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -344,14 +339,14 @@ impl DeviceSelectScreen {
 
             tokio::spawn(audio_stream_receiver(
                 output_device.clone(),
-                output_config.clone(),
+                *output_config,
                 self.audio_control.active_input_audio_streams_info.clone(),
                 self.audio_control.udp_socket.clone(),
             ));
 
             tokio::spawn(audio_stream_spawner(
                 input_device.clone(),
-                input_config.clone(),
+                *input_config,
                 self.global_event_tx.clone(),
                 self.global_event_tx.subscribe(),
                 self.audio_control.udp_socket.clone(),
