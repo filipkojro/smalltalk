@@ -34,25 +34,25 @@ pub async fn tcp_connection(
             frame_result = framed_tcp_stream.next() => {
                 match frame_result {
                     None => {
-                        println!("server shut down");
+                        // println!("server shut down");
                         break;
                     }
                     Some(Ok(bytes)) => {
                         match serde_json::from_slice::<TcpResponse>(&bytes) {
                             Ok(response) => {
-                                println!("connection Ok: {}", response.status == ResponseStatus::Ok);
+                                // println!("connection Ok: {}", response.status == ResponseStatus::Ok);
                                 match response.data {
                                     TcpResponseData::NewConnection { client_id } => {
                                         let mut client_info_var = client_info.write().unwrap();
                                         client_info_var.client_id = client_id;
                                         client_info_var.connected = true;
-                                        println!("fetched client id: {}", client_id);
+                                        // println!("fetched client id: {}", client_id);
                                     }
                                     TcpResponseData::UserConnected { user_id } => {
-                                        println!("new user connected: {}", user_id);
+                                        // println!("new user connected: {}", user_id);
                                     }
                                     TcpResponseData::UserDisconnected { user_id } => {
-                                        println!("user disconnected: {}", user_id);
+                                        // println!("user disconnected: {}", user_id);
                                     }
                                     TcpResponseData::AudioStreamsFullUpdate { audio_stream_info } => {
                                         let mut info_map = audio_control.active_input_audio_streams_info.write().unwrap();
@@ -64,7 +64,7 @@ pub async fn tcp_connection(
                                                 audio_stream,
                                             );
                                         }
-                                        println!("audio streams update");
+                                        // println!("audio streams update");
                                     }
                                     TcpResponseData::NewAudioStreamAccepted { audio_stream_id } => {
                                         let _ = global_event_tx.send(ClientEvent::NewAudioStreamAccepted(audio_stream_id));
@@ -100,7 +100,7 @@ pub async fn tcp_connection(
 
                             }
                             ClientEvent::NewAudioStreamRequest(audio_stream_info) => {
-                                println!("new audio stream request");
+                                // println!("new audio stream request");
                                 let session_client_id = client_info.read().unwrap().client_id;
 
                                 let request_json = serde_json::to_string(&TcpRequest {

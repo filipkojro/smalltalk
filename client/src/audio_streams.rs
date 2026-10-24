@@ -15,6 +15,7 @@ use rubato::{Fft, FixedSync, Resampler, audioadapter::Adapter};
 use shared::AudioStreamInfo;
 use std::{
     collections::HashMap,
+    num::Wrapping,
     sync::{Arc, Mutex, RwLock},
 };
 use tokio::{
@@ -23,7 +24,7 @@ use tokio::{
 };
 
 use crate::models::{
-    ClientEvent, ClientInfo, InputAudioStreamsConsumers, InputAudioStreamsDecoders,
+    AudioStreamKey, ClientEvent, ClientInfo, InputAudioStreamsConsumers, InputAudioStreamsDecoders,
     InputAudioStreamsInfo, InputAudioStreamsProducers, InputAudioStreamsResamplers,
 };
 
@@ -55,6 +56,120 @@ where
         .expect("building output stream failed")
 }
 
+fn decode_sample(
+    client_id: u32,
+    stream_id: u8,
+    stream_info: AudioStreamInfo,
+    output_device_config: SupportedStreamConfig,
+    active_input_audio_streams_decoders: &mut InputAudioStreamsDecoders,
+    active_input_audio_streams_resamplers: &mut InputAudioStreamsResamplers,
+    active_input_audio_streams_producers: &mut InputAudioStreamsProducers,
+    active_input_audio_streams_consumers: &mut InputAudioStreamsConsumers,
+    audio_packet: &[u8],
+    decoded_samples: &mut Vec<f32>,
+    resampled_samples: &mut Vec<f32>,
+    decoded_samples_converted: &mut Vec<f32>,
+    decode_mode: ropus::DecodeMode,
+) {
+    let input_frames = ((20.0 / 1000.0) * stream_info.sample_rate as f32) as usize;
+    let resampler_output_frames =
+        ((20.0 / 1000.0) * output_device_config.sample_rate() as f32) as usize;
+
+    if !active_input_audio_streams_decoders.contains_key(&(client_id, stream_id)) {
+        let channels: ropus::Channels = {
+            if stream_info.channels == 2 {
+                ropus::Channels::Stereo
+            } else {
+                ropus::Channels::Mono
+            }
+        };
+
+        let decoder =
+            Decoder::new(stream_info.sample_rate, channels).expect("failed to create decoder");
+        active_input_audio_streams_decoders
+            .insert((stream_info.client_id, stream_info.stream_id), decoder);
+    }
+
+    active_input_audio_streams_resamplers
+        .entry((client_id, stream_id))
+        .or_insert_with(|| {
+            Fft::<f32>::new(
+                stream_info.sample_rate as usize,
+                output_device_config.sample_rate() as usize,
+                input_frames,
+                stream_info.channels as usize,
+                FixedSync::Both,
+            )
+            .unwrap()
+        });
+
+    if let std::collections::hash_map::Entry::Vacant(e) =
+        active_input_audio_streams_producers.entry((client_id, stream_id))
+    {
+        let ring_buffer_frames = (100.0 / 1000.0) * stream_info.sample_rate as f32;
+        let ring_buffer_samples = ring_buffer_frames as usize * stream_info.channels as usize;
+        let ring_buffer = HeapRb::<f32>::new(ring_buffer_samples);
+        let (producer, consumer) = ring_buffer.split();
+
+        e.insert(producer);
+        active_input_audio_streams_consumers
+            .lock()
+            .unwrap()
+            .insert((client_id, stream_id), consumer);
+    }
+
+    let decoder = active_input_audio_streams_decoders
+        .get_mut(&(client_id, stream_id))
+        .expect("failed to get decoder");
+
+    let _ = decoder
+        .decode_float(audio_packet, decoded_samples, decode_mode)
+        .expect("failed to decode opus");
+
+    let decoded_samples_adapter = InterleavedSlice::new(
+        &decoded_samples,
+        stream_info.channels as usize,
+        input_frames,
+    )
+    .unwrap();
+
+    let mut resampled_samples_adapter = InterleavedSlice::new_mut(
+        resampled_samples,
+        stream_info.channels as usize,
+        resampler_output_frames,
+    )
+    .unwrap();
+
+    let (_, frames_out) = active_input_audio_streams_resamplers
+        .get_mut(&(client_id, stream_id))
+        .expect("failed to get resampler")
+        .process_into_buffer(
+            &decoded_samples_adapter,
+            &mut resampled_samples_adapter,
+            None,
+        )
+        .expect("error during resampling");
+
+    if let Some(producer) = active_input_audio_streams_producers.get_mut(&(client_id, stream_id)) {
+        for (&resampled_sample, output_frame) in resampled_samples
+            .iter()
+            .step_by(stream_info.channels as usize)
+            .zip(
+                decoded_samples_converted
+                    .chunks_exact_mut(output_device_config.channels() as usize),
+            )
+        {
+            for output_sample in output_frame.iter_mut() {
+                *output_sample = resampled_sample;
+            }
+        }
+
+        producer.push_slice(
+            &decoded_samples_converted[..frames_out * output_device_config.channels() as usize],
+        );
+    }
+}
+
 pub async fn audio_stream_receiver(
     output_device: Device,
     output_device_config: SupportedStreamConfig,
@@ -66,6 +181,8 @@ pub async fn audio_stream_receiver(
         Arc::new(Mutex::new(HashMap::new()));
     let mut active_input_audio_streams_decoders: InputAudioStreamsDecoders = HashMap::new();
     let mut active_input_audio_streams_resamplers: InputAudioStreamsResamplers = HashMap::new();
+
+    let mut last_frame_number: HashMap<AudioStreamKey, Wrapping<u8>> = HashMap::new();
 
     let output_stream = match output_device_config.sample_format() {
         SampleFormat::F64 => cpal_build_output_stream::<f64>(
@@ -141,17 +258,20 @@ pub async fn audio_stream_receiver(
     loop {
         match udp_socket.recv_from(&mut receive_buffer).await {
             Ok((len, _)) => {
-                if len < 4 {
+                if len < 5 {
                     continue;
                 }
 
                 let client_id_bytes: [u8; 4] = receive_buffer[0..4].try_into().unwrap();
-                let client_id = u32::from_be_bytes(client_id_bytes);
+                let client_id = u32::from_le_bytes(client_id_bytes);
 
                 let stream_id_bytes = receive_buffer[4];
-                let stream_id = u8::from_be(stream_id_bytes);
+                let stream_id = u8::from_le(stream_id_bytes);
 
-                let audio_packet = &receive_buffer[5..len];
+                let frame_number_bytes = receive_buffer[5];
+                let frame_number = Wrapping(u8::from_le(frame_number_bytes));
+
+                let audio_packet = &receive_buffer[6..len];
 
                 let stream_info = {
                     if let Some(&info) = active_input_audio_streams_info
@@ -165,110 +285,63 @@ pub async fn audio_stream_receiver(
                     }
                 };
 
-                let input_frames = ((20.0 / 1000.0) * stream_info.sample_rate as f32) as usize;
-                let resampler_output_frames =
-                    ((20.0 / 1000.0) * output_device_config.sample_rate() as f32) as usize;
-
-                if !active_input_audio_streams_decoders.contains_key(&(client_id, stream_id)) {
-                    let channels: ropus::Channels = {
-                        if stream_info.channels == 2 {
-                            ropus::Channels::Stereo
-                        } else {
-                            ropus::Channels::Mono
-                        }
-                    };
-
-                    let decoder = Decoder::new(stream_info.sample_rate, channels)
-                        .expect("failed to create decoder");
-                    active_input_audio_streams_decoders
-                        .insert((stream_info.client_id, stream_info.stream_id), decoder);
+                if !last_frame_number.contains_key(&(client_id, stream_id)) {
+                    let last_frame = frame_number - Wrapping(1);
+                    last_frame_number.insert((client_id, stream_id), last_frame);
                 }
 
-                active_input_audio_streams_resamplers
-                    .entry((client_id, stream_id))
-                    .or_insert_with(|| {
-                        Fft::<f32>::new(
-                            stream_info.sample_rate as usize,
-                            output_device_config.sample_rate() as usize,
-                            input_frames,
-                            stream_info.channels as usize,
-                            FixedSync::Both,
-                        )
-                        .unwrap()
-                    });
+                let last_frame = last_frame_number.get(&(client_id, stream_id)).unwrap();
 
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    active_input_audio_streams_producers.entry((client_id, stream_id))
-                {
-                    let ring_buffer_frames = (100.0 / 1000.0) * stream_info.sample_rate as f32;
-                    let ring_buffer_samples =
-                        ring_buffer_frames as usize * stream_info.channels as usize;
-                    let ring_buffer = HeapRb::<f32>::new(ring_buffer_samples);
-                    let (producer, consumer) = ring_buffer.split();
-
-                    e.insert(producer);
-                    active_input_audio_streams_consumers
-                        .lock()
-                        .unwrap()
-                        .insert((client_id, stream_id), consumer);
-                }
-
-                let decoder = active_input_audio_streams_decoders
-                    .get_mut(&(client_id, stream_id))
-                    .expect("failed to get decoder");
-
-                let _ = decoder
-                    .decode_float(
+                if last_frame + Wrapping(1) == frame_number {
+                    decode_sample(
+                        client_id,
+                        stream_id,
+                        stream_info,
+                        output_device_config,
+                        &mut active_input_audio_streams_decoders,
+                        &mut active_input_audio_streams_resamplers,
+                        &mut active_input_audio_streams_producers,
+                        &mut active_input_audio_streams_consumers.clone(),
                         audio_packet,
                         &mut decoded_samples,
+                        &mut resampled_samples,
+                        &mut decoded_samples_converted,
                         ropus::DecodeMode::Normal,
-                    )
-                    .expect("failed to decode opus");
-
-                let decoded_samples_adapter = InterleavedSlice::new(
-                    &decoded_samples,
-                    stream_info.channels as usize,
-                    input_frames,
-                )
-                .unwrap();
-
-                let mut resampled_samples_adapter = InterleavedSlice::new_mut(
-                    &mut resampled_samples,
-                    stream_info.channels as usize,
-                    resampler_output_frames,
-                )
-                .unwrap();
-
-                let (_, frames_out) = active_input_audio_streams_resamplers
-                    .get_mut(&(client_id, stream_id))
-                    .expect("failed to get resampler")
-                    .process_into_buffer(
-                        &decoded_samples_adapter,
-                        &mut resampled_samples_adapter,
-                        None,
-                    )
-                    .expect("error during resampling");
-
-                if let Some(producer) =
-                    active_input_audio_streams_producers.get_mut(&(client_id, stream_id))
-                {
-                    for (&resampled_sample, output_frame) in resampled_samples
-                        .iter()
-                        .step_by(stream_info.channels as usize)
-                        .zip(
-                            decoded_samples_converted
-                                .chunks_exact_mut(output_device_config.channels() as usize),
-                        )
-                    {
-                        for output_sample in output_frame.iter_mut() {
-                            *output_sample = resampled_sample;
-                        }
-                    }
-
-                    producer.push_slice(
-                        &decoded_samples_converted
-                            [..frames_out * output_device_config.channels() as usize],
                     );
+
+                    last_frame_number.insert((client_id, stream_id), frame_number);
+                } else if last_frame + Wrapping(2) <= frame_number {
+                    decode_sample(
+                        client_id,
+                        stream_id,
+                        stream_info,
+                        output_device_config,
+                        &mut active_input_audio_streams_decoders,
+                        &mut active_input_audio_streams_resamplers,
+                        &mut active_input_audio_streams_producers,
+                        &mut active_input_audio_streams_consumers.clone(),
+                        audio_packet,
+                        &mut decoded_samples,
+                        &mut resampled_samples,
+                        &mut decoded_samples_converted,
+                        ropus::DecodeMode::Fec,
+                    );
+                    decode_sample(
+                        client_id,
+                        stream_id,
+                        stream_info,
+                        output_device_config,
+                        &mut active_input_audio_streams_decoders,
+                        &mut active_input_audio_streams_resamplers,
+                        &mut active_input_audio_streams_producers,
+                        &mut active_input_audio_streams_consumers.clone(),
+                        audio_packet,
+                        &mut decoded_samples,
+                        &mut resampled_samples,
+                        &mut decoded_samples_converted,
+                        ropus::DecodeMode::Normal,
+                    );
+                    last_frame_number.insert((client_id, stream_id), frame_number);
                 }
             }
             Err(e) => eprintln!("failed to receive udp packet: {}", e),
@@ -331,7 +404,7 @@ pub async fn audio_stream_spawner(
             Ok(ClientEvent::NewAudioStreamAccepted(stream_id))
                 if stream_id == current_stream_id =>
             {
-                println!("new stream accepted: {}", stream_id);
+                // println!("new stream accepted: {}", stream_id);
                 break;
             }
             Ok(_) => {}
@@ -418,7 +491,9 @@ pub async fn audio_stream_spawner(
             .build()
             .unwrap();
 
-    let mut encoded_frame_buffer = [0u8; 2048];
+    let mut encoded_frame_buffer = vec![0u8; 2048];
+
+    let mut frame_num = Wrapping(0u8);
 
     loop {
         if consumer.occupied_len() >= samples_needed {
@@ -460,15 +535,18 @@ pub async fn audio_stream_spawner(
                 )
                 .expect("failed to encode frame");
 
-            let mut payload = Vec::<u8>::with_capacity(4 + 1 + encoded_len * 4);
+            let mut payload = Vec::<u8>::with_capacity(1 + 4 + 1 + encoded_len * 4);
 
             let (server_address, client_id) = {
                 let info = client_info.read().unwrap();
                 (info.server_address.clone(), info.client_id)
             };
 
-            payload.extend(client_id.to_be_bytes());
-            payload.extend(current_stream_id.to_be_bytes());
+            payload.extend(client_id.to_le_bytes());
+            payload.extend(current_stream_id.to_le_bytes());
+
+            payload.extend(frame_num.0.to_le_bytes());
+            frame_num += Wrapping(1);
 
             payload.extend_from_slice(&encoded_frame_buffer[..encoded_len]);
 

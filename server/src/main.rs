@@ -76,7 +76,7 @@ async fn main() {
             }
 
             let id_bytes: [u8; 4] = buf[0..4].try_into().unwrap();
-            let client_id = u32::from_be_bytes(id_bytes);
+            let client_id = u32::from_le_bytes(id_bytes);
 
             let mut clients = udp_state.write().await;
             if let Some(client) = clients.get_mut(&client_id) {
