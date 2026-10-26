@@ -258,7 +258,7 @@ pub async fn audio_stream_receiver(
     loop {
         match udp_socket.recv_from(&mut receive_buffer).await {
             Ok((len, _)) => {
-                if len < 5 {
+                if len < 6 {
                     continue;
                 }
 
@@ -290,27 +290,10 @@ pub async fn audio_stream_receiver(
                     last_frame_number.insert((client_id, stream_id), last_frame);
                 }
 
-                let last_frame = last_frame_number.get(&(client_id, stream_id)).unwrap();
+                let frame_delta =
+                    (frame_number - last_frame_number.get(&(client_id, stream_id)).unwrap()).0;
 
-                if last_frame + Wrapping(1) == frame_number {
-                    decode_sample(
-                        client_id,
-                        stream_id,
-                        stream_info,
-                        output_device_config,
-                        &mut active_input_audio_streams_decoders,
-                        &mut active_input_audio_streams_resamplers,
-                        &mut active_input_audio_streams_producers,
-                        &mut active_input_audio_streams_consumers.clone(),
-                        audio_packet,
-                        &mut decoded_samples,
-                        &mut resampled_samples,
-                        &mut decoded_samples_converted,
-                        ropus::DecodeMode::Normal,
-                    );
-
-                    last_frame_number.insert((client_id, stream_id), frame_number);
-                } else if last_frame + Wrapping(2) <= frame_number {
+                if frame_delta == 2 {
                     decode_sample(
                         client_id,
                         stream_id,
@@ -341,8 +324,25 @@ pub async fn audio_stream_receiver(
                         &mut decoded_samples_converted,
                         ropus::DecodeMode::Normal,
                     );
-                    last_frame_number.insert((client_id, stream_id), frame_number);
+                } else {
+                    decode_sample(
+                        client_id,
+                        stream_id,
+                        stream_info,
+                        output_device_config,
+                        &mut active_input_audio_streams_decoders,
+                        &mut active_input_audio_streams_resamplers,
+                        &mut active_input_audio_streams_producers,
+                        &mut active_input_audio_streams_consumers.clone(),
+                        audio_packet,
+                        &mut decoded_samples,
+                        &mut resampled_samples,
+                        &mut decoded_samples_converted,
+                        ropus::DecodeMode::Normal,
+                    );
                 }
+
+                last_frame_number.insert((client_id, stream_id), frame_number);
             }
             Err(e) => eprintln!("failed to receive udp packet: {}", e),
         }
@@ -488,6 +488,8 @@ pub async fn audio_stream_spawner(
 
     let mut opus_encoder =
         Encoder::builder(SAMPLE_RATE_48K, encoder_channels, ropus::Application::Voip)
+            .inband_fec(ropus::InbandFec::Enabled)
+            .packet_loss_perc(10)
             .build()
             .unwrap();
 
