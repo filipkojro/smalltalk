@@ -1,5 +1,5 @@
 use futures::{SinkExt, StreamExt};
-use shared::{ResponseStatus, TcpRequest, TcpResponse, TcpResponseData};
+use shared::{TcpRequest, TcpResponse, TcpResponseData};
 use std::sync::{Arc, RwLock};
 use tokio::{
     net::TcpStream,
@@ -48,10 +48,10 @@ pub async fn tcp_connection(
                                         client_info_var.connected = true;
                                         // println!("fetched client id: {}", client_id);
                                     }
-                                    TcpResponseData::UserConnected { user_id } => {
+                                    TcpResponseData::UserConnected { .. } => {
                                         // println!("new user connected: {}", user_id);
                                     }
-                                    TcpResponseData::UserDisconnected { user_id } => {
+                                    TcpResponseData::UserDisconnected { .. } => {
                                         // println!("user disconnected: {}", user_id);
                                     }
                                     TcpResponseData::AudioStreamsFullUpdate { audio_stream_info } => {
