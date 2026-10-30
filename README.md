@@ -1,24 +1,17 @@
 # smalltalk
 
-## build and run client
+## running server
 
-Usage: 
+### using docker
 
 ```bash
-cargo run -p client --release -- --server-ip <SERVER_IP>
+docker build -t smalltalk .
+docker run -d --rm -p 6767:6767/tcp -p 6767:6767/udp --name smalltalk smalltalk
 ```
 
-Options:
+### using cargo
 
-```
--s, --server-ip <SERVER_IP>  
--h, --help                   Print help
--V, --version                Print version
-```
-
-## build and run server
-
-before, open port `8080` tcp/udp
+before, open port `6767` tcp and udp
 
 Usage:
 
@@ -29,17 +22,23 @@ cargo run -p server --release -- [OPTIONS]
 Options:
 
 ```
--s, --server-ip <SERVER_IP>  [default: 0.0.0.0:8080]
+-s, --server-ip <SERVER_IP>  [default: 0.0.0.0:6767]
 -h, --help                   Print help
 -V, --version                Print version
 ```
 
----
+## build and run client
 
-I think it will be based on:
+Usage: 
 
-- `tokio`: async and network connection
-- `cpal`: raw audio input and output
-- `opus`: encoding and decoding audio stream
-- `ffmpeg-next`: capturing, encoding and decoding video stream
-- `egui` + `eframe`: ui
+```bash
+cargo run -p client --release -- --server-ip <SERVER_IP>
+```
+
+Options:
+```
+-c, --connect-with-defaults <CONNECT_WITH_DEFAULTS>
+-s, --server-ip <SERVER_IP>
+-h, --help                                           Print help
+-V, --version                                        Print version
+```

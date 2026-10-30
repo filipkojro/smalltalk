@@ -1,8 +1,6 @@
 use futures::{SinkExt, StreamExt};
-use ringbuf::{HeapRb, traits::Split};
-use ropus::Decoder;
-use shared::{ResponseStatus, TcpRequest, TcpResponse, TcpResponseData};
-use std::sync::{Arc, Mutex, RwLock};
+use shared::{TcpRequest, TcpResponse, TcpResponseData};
+use std::sync::{Arc, RwLock};
 use tokio::{
     net::TcpStream,
     sync::broadcast::{Receiver, Sender},
@@ -36,76 +34,37 @@ pub async fn tcp_connection(
             frame_result = framed_tcp_stream.next() => {
                 match frame_result {
                     None => {
-                        println!("server shut down");
+                        // println!("server shut down");
                         break;
                     }
                     Some(Ok(bytes)) => {
                         match serde_json::from_slice::<TcpResponse>(&bytes) {
                             Ok(response) => {
-                                println!("connection Ok: {}", response.status == ResponseStatus::Ok);
+                                // println!("connection Ok: {}", response.status == ResponseStatus::Ok);
                                 match response.data {
                                     TcpResponseData::NewConnection { client_id } => {
                                         let mut client_info_var = client_info.write().unwrap();
                                         client_info_var.client_id = client_id;
                                         client_info_var.connected = true;
-                                        println!("fetched client id: {}", client_id);
+                                        // println!("fetched client id: {}", client_id);
                                     }
-                                    TcpResponseData::UserConnected { user_id } => {
-                                        println!("new user connected: {}", user_id);
+                                    TcpResponseData::UserConnected { .. } => {
+                                        // println!("new user connected: {}", user_id);
                                     }
-                                    TcpResponseData::UserDisconnected { user_id } => {
-                                        println!("user disconnected: {}", user_id);
+                                    TcpResponseData::UserDisconnected { .. } => {
+                                        // println!("user disconnected: {}", user_id);
                                     }
                                     TcpResponseData::AudioStreamsFullUpdate { audio_stream_info } => {
-                                        let mut producer_map = audio_control.active_input_audio_streams_producers.lock().unwrap();
-                                        producer_map.clear();
-                                        let mut consumer_map = audio_control.active_input_audio_streams_consumers.lock().unwrap();
-                                        consumer_map.clear();
-
-                                        let mut encoder_map = audio_control.active_input_audio_streams_encoders.write().unwrap();
-                                        encoder_map.clear();
-
                                         let mut info_map = audio_control.active_input_audio_streams_info.write().unwrap();
                                         info_map.clear();
 
-
                                         for audio_stream in audio_stream_info {
-                                            let ring_buffer_ms = 150.0;
-                                            let ring_buffer_frames = (ring_buffer_ms / 1000.0) * audio_stream.sample_rate as f32;
-                                            let ring_buffer_samples = ring_buffer_frames as usize * audio_stream.channels as usize;
-                                            let ring_buffer_size = ring_buffer_samples;
-                                            let ring_buffer = HeapRb::<f32>::new(ring_buffer_size);
-                                            let (producer, consumer) = ring_buffer.split();
-
-                                            producer_map.insert(
-                                                (audio_stream.client_id, audio_stream.stream_id),
-                                                producer,
-                                            );
-                                            consumer_map.insert(
-                                                (audio_stream.client_id, audio_stream.stream_id),
-                                                consumer,
-                                            );
-
-                                            let channels: ropus::Channels = {
-                                                if audio_stream.channels == 1 {
-                                                    ropus::Channels::Mono
-                                                } else {
-                                                    ropus::Channels::Stereo
-                                                }
-                                            };
-
-                                            let decoder = Decoder::new(audio_stream.sample_rate, channels).expect("failed to creat decoder");
-                                            encoder_map.insert(
-                                                (audio_stream.client_id, audio_stream.stream_id),
-                                                Mutex::new(decoder),
-                                            );
-
                                             info_map.insert(
                                                 (audio_stream.client_id, audio_stream.stream_id),
                                                 audio_stream,
                                             );
                                         }
-                                        println!("audio streams update");
+                                        // println!("audio streams update");
                                     }
                                     TcpResponseData::NewAudioStreamAccepted { audio_stream_id } => {
                                         let _ = global_event_tx.send(ClientEvent::NewAudioStreamAccepted(audio_stream_id));
@@ -135,13 +94,13 @@ pub async fn tcp_connection(
                                 })
                                 .expect("failed to parse initial request");
 
-                                let _ = framed_tcp_stream.send(Bytes::from(request_json))
+                                framed_tcp_stream.send(Bytes::from(request_json))
                                 .await
                                 .expect("failed to send initial message");
 
                             }
                             ClientEvent::NewAudioStreamRequest(audio_stream_info) => {
-                                println!("new audio stream request");
+                                // println!("new audio stream request");
                                 let session_client_id = client_info.read().unwrap().client_id;
 
                                 let request_json = serde_json::to_string(&TcpRequest {
@@ -151,7 +110,7 @@ pub async fn tcp_connection(
                                     }
                                 }).expect("failed to parse initial request");
 
-                                let _ = framed_tcp_stream.send(Bytes::from(request_json))
+                                framed_tcp_stream.send(Bytes::from(request_json))
                                 .await
                                 .expect("failed to send initial message");
                             }
